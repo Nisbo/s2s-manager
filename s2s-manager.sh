@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.10
+# Version 1.3.11
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.10"
+VERSION="1.3.11"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -2989,12 +2989,18 @@ print_annotated_ufw_rules() {
 }
 
 print_annotated_ufw_added_rules() {
-    local line display_line id label expires now is_temporary
+    local line display_line id label expires now is_temporary count=0
+    local port proto source comment suffix
     now="$(date +%s)"
+
+    printf '%-28s %-12s %-28s %s\n' "To" "Action" "From" "Description / lifetime"
+    printf '%-28s %-12s %-28s %s\n' "--" "------" "----" "----------------------"
 
     while IFS= read -r line; do
         if [[ "${line}" == ufw\ * ]]; then
+            count=$((count + 1))
             is_temporary=0
+            label=""
             if [[ "${line}" =~ S2S[[:space:]]Manager[[:space:]]TEMP[[:space:]]([A-Za-z0-9_-]+) ]]; then
                 is_temporary=1
                 id="${BASH_REMATCH[1]}"
@@ -3010,15 +3016,45 @@ print_annotated_ufw_added_rules() {
                 fi
             fi
             display_line="$(sanitize_ufw_rule_display <<< "${line}")"
-            if (( is_temporary )); then
-                printf '%b%s  %s%b\n' "${C_YELLOW}${C_BOLD}" "${display_line}" "${label}" "${C_RESET}"
-            else
-                printf '%s\n' "${display_line}"
+
+            comment=""
+            if [[ "${display_line}" == *" comment "* ]]; then
+                comment="${display_line#* comment }"
+                comment="${comment#\'}"
+                comment="${comment%\'}"
+                display_line="${display_line%% comment *}"
             fi
-        else
-            printf '%s\n' "${line}"
+            suffix=""
+            [[ -n "${comment}" ]] && suffix="# ${comment}"
+            [[ -n "${label}" ]] && suffix="${suffix}${suffix:+  }${label}"
+
+            port=""; proto=""; source=""
+            if [[ "${display_line}" =~ ^ufw[[:space:]]+allow([[:space:]]+in)?[[:space:]]+([0-9]+)/(tcp|udp)([[:space:]]|$) ]]; then
+                port="${BASH_REMATCH[2]}"
+                proto="${BASH_REMATCH[3]}"
+                source="Anywhere"
+            elif [[ "${display_line}" =~ ^ufw[[:space:]]+allow([[:space:]]+in)?[[:space:]]+from[[:space:]]+([^[:space:]]+)[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+([0-9]+)[[:space:]]+proto[[:space:]]+(tcp|udp)([[:space:]]|$) ]]; then
+                source="${BASH_REMATCH[2]}"
+                port="${BASH_REMATCH[3]}"
+                proto="${BASH_REMATCH[4]}"
+                [[ "${source}" == "any" ]] && source="Anywhere"
+            fi
+
+            if [[ -n "${port}" ]]; then
+                if (( is_temporary )); then
+                    printf '%b%-28s %-12s %-28s %s%b\n' "${C_YELLOW}${C_BOLD}" \
+                        "${port}/${proto}" "ALLOW IN" "${source}" "${suffix}" "${C_RESET}"
+                else
+                    printf '%-28s %-12s %-28s %s\n' "${port}/${proto}" "ALLOW IN" "${source}" "${suffix}"
+                fi
+            else
+                printf '%-28s %-12s %-28s %s\n' "(complex rule)" "STORED" "see command" "${suffix}"
+                printf '    %s\n' "$(sanitize_ufw_rule_display <<< "${line}")"
+            fi
         fi
     done < <(ufw show added 2>/dev/null || true)
+
+    (( count > 0 )) || info "No stored UFW rules were found."
 }
 
 show_all_ufw_rules() {

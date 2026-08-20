@@ -60,7 +60,7 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - Offer safe package installation when UFW is missing
 - Detect the current SSH server port and prepare its allow rule first
 - Keep UFW disabled after installation so existing traffic is not unexpectedly blocked
-- Show status/default policies, all numbered rules and stored rules while UFW is inactive
+- Show status/default policies, numbered active rules, and a readable table of stored rules while UFW is inactive
 - Add permanent incoming TCP/UDP allow rules with a guided preview
 - Add temporary allow rules with a persistent systemd expiry timer (15 minutes through 7 days)
 - Highlight temporary rules in yellow and show their expiry as `[TEMP until ...]`
@@ -125,7 +125,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.10                         ║
+║                       Version 1.3.11                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ The client can then be imported using its generated `.conf` file or the QR-code 
 
 ## Quick start: UFW firewall management
 
-Choose **[22] UFW**. If UFW is installed, use **Show all firewall rules** to display its status/default policies, each rule once in a numbered list and—when inactive—the rules stored for later activation.
+Choose **[22] UFW**. If UFW is installed, use **Show all firewall rules** to display its status/default policies and each active rule once in a numbered list. When UFW is inactive, it cannot supply numbered live rules; the manager converts its stored `ufw show added` commands into a readable `To / Action / From / Description` table instead. Common unrestricted and source-restricted TCP/UDP ALLOW rules are normalized. A complex command that cannot be interpreted safely is clearly marked and also shown unchanged.
 
 If UFW is missing, the manager can install it and prepare an allow rule for the detected SSH administration port. This first implementation deliberately leaves UFW disabled after installation. Review all required HTTP, HTTPS, IPsec, WireGuard and custom-service ports before enabling it manually or extending its rule set.
 

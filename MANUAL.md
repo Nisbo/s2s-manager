@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.10**.
+This manual describes **IPsec S2S Manager 1.3.11**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -421,7 +421,9 @@ When UFW is installed, the menu reports whether it is active and provides **Show
 
 - UFW status, logging and default policies without repeating the rule table;
 - all rules once in a numbered list;
-- the stored `ufw show added` rules when UFW is inactive.
+- a readable `To / Action / From / Description` table generated from stored rules when UFW is inactive.
+
+Inactive UFW does not provide numbered live rules, but the manager still displays every stored rule that would apply after activation. Common TCP/UDP ALLOW commands are normalized into the same concepts used by the active view. Temporary rules retain their color and expiry annotation. Complex commands that cannot be parsed without assumptions are marked as such and also printed unchanged rather than being hidden or misrepresented.
 
 When UFW is not installed, the menu offers a guarded installation path. It detects the current SSH server port from the active SSH connection or the `sshd` configuration, installs the package and prepares an SSH allow rule with the comment `S2S Manager SSH safety`.
 
