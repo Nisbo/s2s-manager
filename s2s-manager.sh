@@ -9318,33 +9318,39 @@ main_menu() {
 # Start
 # ==============================================================================
 
-ensure_root
-init_state_dirs
+main() {
+    ensure_root
+    init_state_dirs
 
-WG_STATE_RECONCILED=0
-if wireguard_reconcile_management_state; then
-    :
-else
-    rc=$?
-    if [[ "${rc}" == "2" ]]; then
-        WG_STATE_RECONCILED=1
+    WG_STATE_RECONCILED=0
+    if wireguard_reconcile_management_state; then
+        :
+    else
+        local rc=$?
+        if [[ "${rc}" == "2" ]]; then
+            WG_STATE_RECONCILED=1
+        fi
     fi
-fi
 
-if repair_peer_type_state_bug; then
-    echo
-    ok "Recovered Debian peer type metadata from an existing peer bundle."
-    info "This repairs tunnel state written by versions 0.40-test through 0.44-test."
-    sleep 2
-fi
+    if repair_peer_type_state_bug; then
+        echo
+        ok "Recovered Debian peer type metadata from an existing peer bundle."
+        info "This repairs tunnel state written by versions 0.40-test through 0.44-test."
+        sleep 2
+    fi
 
-if [[ "${WG_STATE_RECONCILED:-0}" == "1" ]]; then
-    echo
-    warn "WireGuard manager state said MANAGED, but the current wg0.conf is not manager-generated."
-    info "The live WireGuard configuration was NOT changed."
-    info "Manager state was safely returned to IMPORTED / READ-ONLY."
-    sleep 2
-fi
+    if [[ "${WG_STATE_RECONCILED:-0}" == "1" ]]; then
+        echo
+        warn "WireGuard manager state said MANAGED, but the current wg0.conf is not manager-generated."
+        info "The live WireGuard configuration was NOT changed."
+        info "Manager state was safely returned to IMPORTED / READ-ONLY."
+        sleep 2
+    fi
 
-setup_required_menu
-main_menu
+    setup_required_menu
+    main_menu
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
