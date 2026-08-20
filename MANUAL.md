@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.6**.
+This manual describes **IPsec S2S Manager 1.3.7**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -442,7 +442,7 @@ The manager shows a complete preview and warns when source `any` exposes the por
 
 A temporary rule is a normal UFW rule plus a manager-owned systemd timer. Available defaults are 15 minutes, 1 hour, 8 hours and 24 hours; a custom duration from 1 through 10080 minutes (7 days) is also supported.
 
-Timer units are stored under `/etc/systemd/system/`, and rule metadata is stored under `/root/s2s-manager/firewall/temporary/`. `Persistent=true` ensures that systemd processes a missed expiry after a reboot. The rule list identifies these entries as `[TEMP until ...]`; all other UFW rules are marked `[PERMANENT]`. Internal timestamp/random timer identifiers remain in the underlying UFW comment for safe correlation but are removed from the user-facing display.
+Timer units are stored under `/etc/systemd/system/`, and rule metadata is stored under `/root/s2s-manager/firewall/temporary/`. `Persistent=true` ensures that systemd processes a missed expiry after a reboot. The rule list highlights temporary entries in yellow and identifies them as `[TEMP until ...]`; permanent rules retain the normal UFW display without an extra label. Internal timestamp/random timer identifiers remain in the underlying UFW comment for safe correlation but are removed from the user-facing display.
 
 This design intentionally does not insert an unmanaged runtime-only iptables/nftables rule. Such rules are not represented reliably by UFW and can disappear during reload or reboot.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.6
+# Version 1.3.7
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.6"
+VERSION="1.3.7"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -2956,13 +2956,14 @@ sanitize_ufw_rule_display() {
 }
 
 print_annotated_ufw_rules() {
-    local line display_line id label expires now
+    local line display_line id label expires now is_temporary
     now="$(date +%s)"
 
     while IFS= read -r line; do
         if [[ "${line}" =~ ^\[[[:space:]]*[0-9]+\] ]]; then
-            label="[PERMANENT]"
+            is_temporary=0
             if [[ "${line}" =~ S2S[[:space:]]Manager[[:space:]]TEMP[[:space:]]([A-Za-z0-9_-]+) ]]; then
+                is_temporary=1
                 id="${BASH_REMATCH[1]}"
                 if load_ufw_temp_rule "${id}"; then
                     expires="$(format_ufw_expiry "${UFW_TEMP_EXPIRES}")"
@@ -2976,7 +2977,11 @@ print_annotated_ufw_rules() {
                 fi
             fi
             display_line="$(sanitize_ufw_rule_display <<< "${line}")"
-            printf '%s  %s\n' "${display_line}" "${label}"
+            if (( is_temporary )); then
+                printf '%b%s  %s%b\n' "${C_YELLOW}${C_BOLD}" "${display_line}" "${label}" "${C_RESET}"
+            else
+                printf '%s\n' "${display_line}"
+            fi
         else
             printf '%s\n' "${line}"
         fi
@@ -2984,13 +2989,14 @@ print_annotated_ufw_rules() {
 }
 
 print_annotated_ufw_added_rules() {
-    local line display_line id label expires now
+    local line display_line id label expires now is_temporary
     now="$(date +%s)"
 
     while IFS= read -r line; do
         if [[ "${line}" == ufw\ * ]]; then
-            label="[PERMANENT]"
+            is_temporary=0
             if [[ "${line}" =~ S2S[[:space:]]Manager[[:space:]]TEMP[[:space:]]([A-Za-z0-9_-]+) ]]; then
+                is_temporary=1
                 id="${BASH_REMATCH[1]}"
                 if load_ufw_temp_rule "${id}"; then
                     expires="$(format_ufw_expiry "${UFW_TEMP_EXPIRES}")"
@@ -3004,7 +3010,11 @@ print_annotated_ufw_added_rules() {
                 fi
             fi
             display_line="$(sanitize_ufw_rule_display <<< "${line}")"
-            printf '%s  %s\n' "${display_line}" "${label}"
+            if (( is_temporary )); then
+                printf '%b%s  %s%b\n' "${C_YELLOW}${C_BOLD}" "${display_line}" "${label}" "${C_RESET}"
+            else
+                printf '%s\n' "${display_line}"
+            fi
         else
             printf '%s\n' "${line}"
         fi

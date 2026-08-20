@@ -63,7 +63,7 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - Show status/default policies, all numbered rules and stored rules while UFW is inactive
 - Add permanent incoming TCP/UDP allow rules with a guided preview
 - Add temporary allow rules with a persistent systemd expiry timer (15 minutes through 7 days)
-- Mark displayed rules as `[PERMANENT]` or `[TEMP until ...]`
+- Highlight temporary rules in yellow and show their expiry as `[TEMP until ...]`
 - Delete numbered active rules with preview, typed confirmation and SSH/VPN protection
 - Reject duplicate rules so an existing permanent rule cannot accidentally become temporary
 - Keep provider/cloud firewall management explicitly separate
@@ -116,7 +116,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.6                          ║
+║                       Version 1.3.7                          ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ If UFW is missing, the manager can install it and prepare an allow rule for the 
 
 Permanent and temporary incoming ALLOW rules can be added for TCP or UDP. The guided form presents protocol, destination port, allowed source and description as four separate steps, with the relevant explanation immediately before each input. Use `B` in any step to cancel the wizard and return to UFW management, or `E` to exit the program. The source may be `any`, one plain IPv4 address or one IPv4 CIDR network. URL syntax such as `https://`, hostnames and values containing `:port` are not accepted in the source field.
 
-Temporary rules use an on-disk systemd timer and remain clearly marked with their expiry time. The internal timer identifier is hidden from the user-facing rule list; only the entered description and `[TEMP until …]` are shown. The timer survives a reboot and removes the matching UFW rule at expiry. Rules can be deleted by number while UFW is active. The manager refuses to delete the detected current SSH rule and shows an additional warning for WireGuard, IKE, NAT-T and ESP rules.
+Temporary rules use an on-disk systemd timer and are highlighted in yellow with their expiry time. Permanent rules keep the normal UFW display without an additional label. The internal timer identifier is hidden from the user-facing rule list; only the entered description and `[TEMP until …]` are shown for temporary rules. The timer survives a reboot and removes the matching UFW rule at expiry. Rules can be deleted by number while UFW is active. The manager refuses to delete the detected current SSH rule and shows an additional warning for WireGuard, IKE, NAT-T and ESP rules.
 
 ## Safety model
 
