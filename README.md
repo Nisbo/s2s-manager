@@ -72,9 +72,10 @@ The manager guides you through setup, validates conflicts, creates and maintains
 
 - Dedicated **[23] Access Check** main-menu entry
 - Select a managed WireGuard client or enter a custom source network, then choose from the detected interfaces
-- Check access toward the IPv4 Internet, one IPv4 host, or one IPv4 CIDR network
+- Check forwarded access toward the IPv4 Internet, one IPv4 host, or one IPv4 CIDR network
+- Check a TCP/UDP service on the Debian server, including listener and matching UFW INPUT rule
 - Inspect interface state, WireGuard peer/client AllowedIPs, IPv4 forwarding, kernel route selection, UFW routed policy, iptables forwarding and Internet NAT
-- Report confirmed checks, warnings/unknowns and definite blockers without changing the system
+- Report a prominent Internet, routed-network or local-service access verdict plus detailed evidence
 
 ## Requirements
 
@@ -124,7 +125,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.9                          ║
+║                       Version 1.3.10                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────
@@ -198,7 +199,7 @@ Permanent and temporary incoming ALLOW rules can be added for TCP or UDP. The gu
 
 Temporary rules use an on-disk systemd timer and are highlighted in yellow with their expiry time. Permanent rules keep the normal UFW display without an additional label. The internal timer identifier is hidden from the user-facing rule list; only the entered description and `[TEMP until …]` are shown for temporary rules. The timer survives a reboot and removes the matching UFW rule at expiry. Rules can be deleted by number while UFW is active. The manager refuses to delete the detected current SSH rule and shows an additional warning for WireGuard, IKE, NAT-T and ESP rules.
 
-Choose **[23] Access Check** for a read-only server-side path analysis. Its own submenu remains open after a result. Select a managed WireGuard client or enter a custom source IPv4 network; for custom sources the manager lists all Linux interfaces with their IPv4 addresses and marks the interface suggested by the return route. The selected ingress interface is required for forwarded-route simulation and interface-specific firewall evaluation. After selecting an Internet, host or CIDR destination, the result checks the available forwarding, routing, firewall and NAT evidence without adding rules or sending traffic as the remote client. A live explicit iptables FORWARD allow is evaluated together with UFW's routed default policy instead of treating UFW's default DENY as an automatic blocker. Warnings are explicitly not presented as proof of failure, and only a real test from the remote device can prove end-to-end access.
+Choose **[23] Access Check** for a read-only server-side path analysis. Its own submenu remains open after a result. Select a managed WireGuard client or enter a custom source IPv4 network; for custom sources the manager lists all Linux interfaces with their IPv4 addresses and marks the interface suggested by the return route. The selected ingress interface is required for forwarded-route simulation and interface-specific firewall evaluation. Internet, host and CIDR destinations check a forwarded path. **Service on this Debian server** instead asks for TCP/UDP and a local port, verifies a non-loopback listener, and checks whether a matching UFW INPUT rule covers the selected source—including a broader source CIDR. A live explicit iptables FORWARD allow is evaluated together with UFW's routed default policy instead of treating UFW's default DENY as an automatic blocker. Results include a prominent `INTERNET ACCESS`, `ROUTED NETWORK ACCESS`, or `LOCAL SERVICE ACCESS` verdict. No check adds rules or sends traffic as the remote client; only a real test from that device can prove end-to-end access.
 
 ## Safety model
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.9
+# Version 1.3.10
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.9"
+VERSION="1.3.10"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -10052,6 +10052,37 @@ access_check_first_ip() {
     int_to_ipv4 "${candidate}"
 }
 
+access_check_cidr_contains() {
+    local outer="$1" inner="$2" outer_net outer_end inner_net inner_end outer_prefix inner_prefix
+    valid_ipv4 "${outer}" && outer="${outer}/32"
+    valid_ipv4 "${inner}" && inner="${inner}/32"
+    valid_cidr "${outer}" && valid_cidr "${inner}" || return 1
+    outer_prefix="${outer##*/}"
+    inner_prefix="${inner##*/}"
+    (( outer_prefix <= inner_prefix )) || return 1
+    outer_net="$(cidr_network_int "${outer}")"
+    inner_net="$(cidr_network_int "${inner}")"
+    outer_end=$((outer_net + (1 << (32 - outer_prefix)) - 1))
+    inner_end=$((inner_net + (1 << (32 - inner_prefix)) - 1))
+    (( outer_net <= inner_net && outer_end >= inner_end ))
+}
+
+access_check_ufw_allows_local_service() {
+    local port="$1" proto="$2" source="$3" line rule_source added
+    ufw_installed || return 1
+    added="$(ufw show added 2>/dev/null || true)"
+    while IFS= read -r line; do
+        if grep -Eq "^ufw[[:space:]]+allow([[:space:]]+in)?[[:space:]]+${port}/${proto}([[:space:]]|$)" <<< "${line}"; then
+            return 0
+        fi
+        if [[ "${line}" =~ allow[[:space:]]+from[[:space:]]+([^[:space:]]+)[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+${port}[[:space:]]+proto[[:space:]]+${proto}([[:space:]]|$) ]]; then
+            rule_source="${BASH_REMATCH[1]}"
+            access_check_cidr_contains "${rule_source}" "${source}" && return 0
+        fi
+    done <<< "${added}"
+    return 1
+}
+
 access_check_select_wireguard_client() {
     local -a ids=()
     local id choice i=0
@@ -10192,7 +10223,7 @@ EOF
 }
 
 access_check_collect_destination() {
-    local choice value
+    local choice value protocol port
     banner
     section "ACCESS CHECK - DESTINATION"
     cat <<'EOF'
@@ -10201,22 +10232,26 @@ Select what the source should be able to reach:
   [1] Entire IPv4 Internet (route probe uses 1.1.1.1)
   [2] One destination IPv4 address
   [3] One destination IPv4 CIDR network
+  [4] TCP/UDP service on this Debian server
   [B] Back
   [E] Exit
 
-This first read-only check evaluates the network path. It does not yet test a
-specific TCP/UDP port or create a temporary firewall rule.
+Internet/host/network selections evaluate a forwarded path through this server.
+The local-service selection evaluates an INPUT path to a TCP/UDP port on it.
+No selection creates a firewall rule.
 EOF
     echo
     read -r -p "Destination: " choice
     case "${choice}" in
         1)
+            ACCESS_CHECK_MODE="internet"
             ACCESS_DEST_LABEL="entire IPv4 Internet"
             ACCESS_DEST_VALUE="0.0.0.0/0"
             ACCESS_DEST_IP="1.1.1.1"
             ACCESS_NEEDS_NAT=1
             ;;
         2)
+            ACCESS_CHECK_MODE="forward"
             echo
             echo "Enter only one IPv4 address, for example 10.200.200.10."
             read -r -p "Destination IPv4: " value
@@ -10227,6 +10262,7 @@ EOF
             ACCESS_NEEDS_NAT=0
             ;;
         3)
+            ACCESS_CHECK_MODE="forward"
             echo
             echo "Enter one IPv4 CIDR, for example 10.200.200.0/24."
             echo "The route probe uses the first usable address in that network."
@@ -10237,10 +10273,125 @@ EOF
             ACCESS_DEST_LABEL="destination network"
             ACCESS_NEEDS_NAT=0
             ;;
+        4)
+            ACCESS_CHECK_MODE="local_service"
+            echo
+            echo "Choose the transport protocol used by the local service."
+            echo "Use TCP for SSH/HTTP/HTTPS and UDP for services such as DNS or WireGuard."
+            read -r -p "Protocol [tcp]: " protocol
+            case "${protocol}" in
+                b|B) return 1 ;;
+                e|E) clear_screen; echo "Bye."; exit 0 ;;
+            esac
+            protocol="$(tr '[:upper:]' '[:lower:]' <<< "${protocol:-tcp}")"
+            [[ "${protocol}" == "tcp" || "${protocol}" == "udp" ]] || { error "Protocol must be tcp or udp."; pause; return 1; }
+            echo
+            echo "Enter the local destination port from 1 through 65535."
+            echo "Examples: 22 for SSH, 80 for HTTP, 443 for HTTPS or 8851 for your local service."
+            read -r -p "Local destination port: " port
+            case "${port}" in
+                b|B) return 1 ;;
+                e|E) clear_screen; echo "Bye."; exit 0 ;;
+            esac
+            valid_port "${port}" || { error "Port must be between 1 and 65535."; pause; return 1; }
+            ACCESS_SERVICE_PROTO="${protocol}"
+            ACCESS_SERVICE_PORT="$((10#${port}))"
+            ACCESS_DEST_LABEL="service on this Debian server"
+            ACCESS_DEST_VALUE="${ACCESS_SERVICE_PROTO}/${ACCESS_SERVICE_PORT}"
+            ACCESS_DEST_IP="local"
+            ACCESS_NEEDS_NAT=0
+            ;;
         b|B|0|"") return 1 ;;
         e|E) clear_screen; echo "Bye."; exit 0 ;;
         *) error "Invalid selection."; pause; return 1 ;;
     esac
+}
+
+access_check_local_service() {
+    local sockets="" ufw_status="" default_incoming="" input_policy="" proto_upper
+    proto_upper="$(tr '[:lower:]' '[:upper:]' <<< "${ACCESS_SERVICE_PROTO}")"
+
+    section "LOCAL SERVICE"
+    if command_available ss; then
+        if [[ "${ACCESS_SERVICE_PROTO}" == "tcp" ]]; then
+            sockets="$(ss -H -lnt "sport = :${ACCESS_SERVICE_PORT}" 2>/dev/null || true)"
+        else
+            sockets="$(ss -H -lnu "sport = :${ACCESS_SERVICE_PORT}" 2>/dev/null || true)"
+        fi
+        if [[ -z "${sockets}" ]]; then
+            access_check_fail "No local ${proto_upper} listener was found on port ${ACCESS_SERVICE_PORT}."
+        elif grep -Ev '127\.0\.0\.1:|\[::1\]:' <<< "${sockets}" | grep -q '[^[:space:]]'; then
+            access_check_ok "A non-loopback ${proto_upper} listener exists on port ${ACCESS_SERVICE_PORT}."
+            printf '%s\n' "${sockets}" | sed 's/^/    /'
+        else
+            access_check_fail "Port ${ACCESS_SERVICE_PORT}/${ACCESS_SERVICE_PROTO} listens only on loopback."
+            printf '%s\n' "${sockets}" | sed 's/^/    /'
+        fi
+    else
+        access_check_warn "The ss command is unavailable; local listener state could not be checked."
+    fi
+
+    section "LOCAL INPUT FIREWALL"
+    if ufw_installed && ufw_active; then
+        ufw_status="$(ufw status verbose 2>/dev/null || true)"
+        default_incoming="$(grep -E '^Default:' <<< "${ufw_status}" | head -1)"
+        if access_check_ufw_allows_local_service "${ACCESS_SERVICE_PORT}" "${ACCESS_SERVICE_PROTO}" "${ACCESS_SOURCE_VALUE}"; then
+            access_check_ok "UFW has an ALLOW IN rule covering ${ACCESS_SOURCE_VALUE} to ${ACCESS_SERVICE_PORT}/${ACCESS_SERVICE_PROTO}."
+        elif grep -Eiq 'allow[[:space:]]*\(incoming\)' <<< "${default_incoming}"; then
+            access_check_ok "UFW default incoming policy is ALLOW."
+        else
+            access_check_fail "UFW is active with default incoming DENY and no matching ALLOW IN rule was found."
+        fi
+    else
+        if ufw_installed; then
+            info "UFW is installed but inactive; it does not currently filter this local service."
+        else
+            info "UFW is not installed; no UFW decision applies to this local service."
+        fi
+        if command_available iptables; then
+            input_policy="$(iptables -S INPUT 2>/dev/null | head -1)"
+            if [[ "${input_policy}" == "-P INPUT ACCEPT" ]]; then
+                access_check_ok "Live iptables INPUT default policy is ACCEPT."
+            else
+                access_check_warn "Live INPUT policy is not plainly ACCEPT; specific nftables/iptables rules require review."
+            fi
+        else
+            access_check_warn "Low-level INPUT firewall policy could not be checked."
+        fi
+    fi
+}
+
+access_check_print_result() {
+    local headline service_proto_upper
+    section "RESULT"
+    printf '%-18s %d\n' "Confirmed checks:" "${ACCESS_CHECK_OK}"
+    printf '%-18s %d\n' "Warnings/unknown:" "${ACCESS_CHECK_WARN}"
+    printf '%-18s %d\n' "Blocking failures:" "${ACCESS_CHECK_FAIL}"
+    echo
+
+    case "${ACCESS_CHECK_MODE}" in
+        internet) headline="INTERNET ACCESS" ;;
+        local_service)
+            service_proto_upper="$(tr '[:lower:]' '[:upper:]' <<< "${ACCESS_SERVICE_PROTO}")"
+            headline="LOCAL SERVICE ACCESS ${service_proto_upper}/${ACCESS_SERVICE_PORT}"
+            ;;
+        *) headline="ROUTED NETWORK ACCESS" ;;
+    esac
+
+    if (( ACCESS_CHECK_FAIL > 0 )); then
+        printf '%b%s: BLOCKED OR INCOMPLETE%b\n' "${C_RED}${C_BOLD}" "${headline}" "${C_RESET}"
+        error "At least one blocking server-side configuration problem was detected."
+    elif (( ACCESS_CHECK_WARN > 0 )); then
+        printf '%b%s: NOT FULLY CONFIRMED%b\n' "${C_YELLOW}${C_BOLD}" "${headline}" "${C_RESET}"
+        warn "No definite blocker was found, but the server-side path is not fully proven."
+    else
+        printf '%b%s: CONFIGURED%b\n' "${C_GREEN}${C_BOLD}" "${headline}" "${C_RESET}"
+        ok "All server-side checks available to the manager passed."
+    fi
+    echo
+    info "This is a read-only server-side configuration check, not an end-to-end test from the remote client."
+    info "No firewall rule, route, interface or system setting was changed."
+    pause
 }
 
 access_check_run() {
@@ -10256,7 +10407,7 @@ access_check_run() {
     printf '%-24s %s (%s)\n' "Source:" "${ACCESS_SOURCE_LABEL}" "${ACCESS_SOURCE_VALUE}"
     printf '%-24s %s\n' "Ingress interface:" "${ACCESS_INGRESS_IF}"
     printf '%-24s %s (%s)\n' "Destination:" "${ACCESS_DEST_LABEL}" "${ACCESS_DEST_VALUE}"
-    printf '%-24s %s\n' "Route probe address:" "${ACCESS_DEST_IP}"
+    [[ "${ACCESS_CHECK_MODE}" != "local_service" ]] && printf '%-24s %s\n' "Route probe address:" "${ACCESS_DEST_IP}"
     echo
 
     section "INTERFACE AND SOURCE"
@@ -10295,6 +10446,12 @@ access_check_run() {
             access_check_warn "No client export is available; client-side AllowedIPs cannot be verified."
         fi
         [[ -n "${WG_NETWORK:-}" ]] && nat_source="${WG_NETWORK}"
+    fi
+
+    if [[ "${ACCESS_CHECK_MODE}" == "local_service" ]]; then
+        access_check_local_service
+        access_check_print_result
+        return
     fi
 
     section "FORWARDING AND ROUTE"
@@ -10374,22 +10531,7 @@ access_check_run() {
         fi
     fi
 
-    section "RESULT"
-    printf '%-18s %d\n' "Confirmed checks:" "${ACCESS_CHECK_OK}"
-    printf '%-18s %d\n' "Warnings/unknown:" "${ACCESS_CHECK_WARN}"
-    printf '%-18s %d\n' "Blocking failures:" "${ACCESS_CHECK_FAIL}"
-    echo
-    if (( ACCESS_CHECK_FAIL > 0 )); then
-        error "At least one blocking configuration problem was detected."
-    elif (( ACCESS_CHECK_WARN > 0 )); then
-        warn "No definite blocker was found, but the path is not fully proven."
-    else
-        ok "All checks available to the manager passed."
-    fi
-    echo
-    info "This is a read-only server-side configuration check, not an end-to-end test from the remote client."
-    info "No firewall rule, route, interface or system setting was changed."
-    pause
+    access_check_print_result
 }
 
 access_check_menu() {
