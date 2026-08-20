@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.8
+# Version 1.3.9
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.8"
+VERSION="1.3.9"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -10086,8 +10086,59 @@ access_check_select_wireguard_client() {
     ACCESS_WG_CLIENT_ID="${ids[$((choice-1))]}"
 }
 
+access_check_suggest_interface() {
+    local source_ip="$1" route
+    route="$(ip -4 route get "${source_ip}" 2>/dev/null || true)"
+    awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' <<< "${route}"
+}
+
+access_check_select_interface() {
+    local suggested="$1" choice iface addresses i=0
+    local -a interfaces=()
+
+    while read -r iface; do
+        [[ -n "${iface}" ]] && interfaces+=("${iface}")
+    done < <(ip -o link show 2>/dev/null | awk -F': ' '{name=$2; sub(/@.*/, "", name); print name}')
+    (( ${#interfaces[@]} > 0 )) || { error "No Linux network interfaces could be listed."; return 1; }
+
+    echo
+    echo "The ingress interface is required for an accurate forwarded-packet route"
+    echo "simulation and for interface-specific firewall rules. Choose the interface"
+    echo "on which traffic from ${ACCESS_SOURCE_VALUE} enters this server."
+    echo
+    echo "Available interfaces:"
+    for iface in "${interfaces[@]}"; do
+        i=$((i + 1))
+        addresses="$(ip -o -4 addr show dev "${iface}" 2>/dev/null | awk '{print $4}' | paste -sd ',' -)"
+        [[ -n "${addresses}" ]] || addresses="no IPv4 address"
+        if [[ "${iface}" == "${suggested}" ]]; then
+            printf '  [%d] %-18s %-24s  [suggested]\n' "${i}" "${iface}" "${addresses}"
+        else
+            printf '  [%d] %-18s %s\n' "${i}" "${iface}" "${addresses}"
+        fi
+    done
+    [[ -n "${suggested}" ]] && echo "  [A] Use suggested interface: ${suggested}"
+    echo "  [B] Back"
+    echo "  [E] Exit"
+    echo
+    read -r -p "Ingress interface: " choice
+    case "${choice}" in
+        a|A)
+            [[ -n "${suggested}" ]] || { error "No interface suggestion is available."; return 1; }
+            ACCESS_INGRESS_IF="${suggested}"
+            ;;
+        b|B|0|"") return 1 ;;
+        e|E) clear_screen; echo "Bye."; exit 0 ;;
+        *)
+            [[ "${choice}" =~ ^[0-9]+$ ]] || { error "Enter a listed interface number."; return 1; }
+            (( choice >= 1 && choice <= ${#interfaces[@]} )) || { error "Interface number does not exist."; return 1; }
+            ACCESS_INGRESS_IF="${interfaces[$((choice-1))]}"
+            ;;
+    esac
+}
+
 access_check_collect_source() {
-    local choice value route
+    local choice value suggested ssh_peer
     ACCESS_WG_CLIENT_ID=""
 
     banner
@@ -10097,11 +10148,16 @@ Select where the connection would originate. This check does not send traffic
 as that remote device and does not modify firewall or routing configuration.
 
   [1] Configured WireGuard client
-  [2] Current SSH client IP
-  [3] Custom ingress interface and source IPv4/CIDR
+  [2] Custom source IPv4/CIDR and ingress interface
   [B] Back
   [E] Exit
 EOF
+    ssh_peer="$(awk '{print $1}' <<< "${SSH_CONNECTION:-}")"
+    if valid_ipv4 "${ssh_peer}"; then
+        echo
+        info "Current SSH peer visible to this server: ${ssh_peer}"
+        echo "This public/NAT address is informational and is not treated as a forwarded network source."
+    fi
     echo
     read -r -p "Source: " choice
     case "${choice}" in
@@ -10111,25 +10167,6 @@ EOF
             access_check_select_wireguard_client || { pause; return 1; }
             ;;
         2)
-            value="$(awk '{print $1}' <<< "${SSH_CONNECTION:-}")"
-            if ! valid_ipv4 "${value}"; then
-                error "No IPv4 SSH client address is available in SSH_CONNECTION."
-                pause
-                return 1
-            fi
-            route="$(ip -4 route get "${value}" 2>/dev/null || true)"
-            ACCESS_INGRESS_IF="$(awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' <<< "${route}")"
-            [[ -n "${ACCESS_INGRESS_IF}" ]] || { error "Could not determine the SSH ingress interface."; pause; return 1; }
-            ACCESS_SOURCE_LABEL="current SSH client"
-            ACCESS_SOURCE_VALUE="${value}/32"
-            ACCESS_SOURCE_IP="${value}"
-            ;;
-        3)
-            echo
-            echo "Enter the Linux interface on which this traffic arrives."
-            echo "Examples: wg0, eth0, ens18 or vti-office. Enter only the interface name."
-            read -r -p "Ingress interface: " ACCESS_INGRESS_IF
-            [[ "${ACCESS_INGRESS_IF}" =~ ^[A-Za-z0-9_.:-]{1,15}$ ]] || { error "Invalid interface name."; pause; return 1; }
             echo
             echo "Enter one source IPv4 address or IPv4 CIDR network."
             echo "Examples: 10.250.0.2 or 192.168.10.0/24. Do not enter a URL or port."
@@ -10145,6 +10182,8 @@ EOF
             fi
             ACCESS_SOURCE_IP="$(access_check_first_ip "${ACCESS_SOURCE_VALUE}")"
             ACCESS_SOURCE_LABEL="custom source"
+            suggested="$(access_check_suggest_interface "${ACCESS_SOURCE_IP}")"
+            access_check_select_interface "${suggested}" || { pause; return 1; }
             ;;
         b|B|0|"") return 1 ;;
         e|E) clear_screen; echo "Bye."; exit 0 ;;
@@ -10205,8 +10244,9 @@ EOF
 }
 
 access_check_run() {
-    local route simulated=1 egress="" forwarding="" ufw_status="" default_routed=""
+    local route simulated=1 egress="" forwarding="" ufw_status="" ufw_rules="" default_routed=""
     local wg_dump="" peer="" export_file="" nat_source="${ACCESS_SOURCE_VALUE}"
+    local link_line="" link_flags="" forward_allow=0
 
     ACCESS_CHECK_OK=0
     ACCESS_CHECK_WARN=0
@@ -10222,10 +10262,12 @@ access_check_run() {
     section "INTERFACE AND SOURCE"
     if ip link show "${ACCESS_INGRESS_IF}" >/dev/null 2>&1; then
         access_check_ok "Ingress interface ${ACCESS_INGRESS_IF} exists."
-        if ip link show "${ACCESS_INGRESS_IF}" 2>/dev/null | head -1 | grep -q 'state UP'; then
+        link_line="$(ip link show "${ACCESS_INGRESS_IF}" 2>/dev/null | head -1)"
+        link_flags="$(sed -n 's/.*<\([^>]*\)>.*/\1/p' <<< "${link_line}")"
+        if [[ ",${link_flags}," == *,UP,* ]]; then
             access_check_ok "Ingress interface ${ACCESS_INGRESS_IF} is UP."
         else
-            access_check_warn "Interface ${ACCESS_INGRESS_IF} does not report state UP (virtual interfaces may report UNKNOWN)."
+            access_check_fail "Ingress interface ${ACCESS_INGRESS_IF} does not have the UP flag."
         fi
     else
         access_check_fail "Ingress interface ${ACCESS_INGRESS_IF} does not exist."
@@ -10282,6 +10324,7 @@ access_check_run() {
     section "FORWARD FIREWALL"
     if command_available iptables; then
         if iptables -C FORWARD -i "${ACCESS_INGRESS_IF}" -j ACCEPT >/dev/null 2>&1; then
+            forward_allow=1
             access_check_ok "iptables contains an ingress FORWARD allow rule for ${ACCESS_INGRESS_IF}."
         else
             access_check_warn "No simple iptables 'FORWARD -i ${ACCESS_INGRESS_IF} -j ACCEPT' rule was found."
@@ -10294,12 +10337,21 @@ access_check_run() {
     if ufw_installed; then
         if ufw_active; then
             ufw_status="$(ufw status verbose 2>/dev/null || true)"
+            ufw_rules="$(ufw status numbered 2>/dev/null || true)"
             default_routed="$(grep -E '^Default:' <<< "${ufw_status}" | head -1)"
             if grep -Eiq 'allow[[:space:]]*\(routed\)' <<< "${default_routed}"; then
                 access_check_ok "UFW default routed policy is ALLOW."
             elif grep -Eiq 'deny[[:space:]]*\(routed\)' <<< "${default_routed}"; then
-                access_check_warn "UFW default routed policy is DENY; a matching UFW route rule is required."
-                info "This version does not claim a match from UFW's formatted table because overlapping CIDRs and rule order need exact evaluation."
+                if (( forward_allow == 1 )) && ! grep -Eq 'ALLOW FWD|DENY FWD|REJECT FWD|LIMIT FWD' <<< "${ufw_rules}"; then
+                    access_check_ok "UFW routed default is DENY, but the live explicit iptables rule allows ingress forwarding from ${ACCESS_INGRESS_IF}."
+                    info "The explicit live FORWARD rule is the effective allow evidence for this path."
+                elif (( forward_allow == 1 )); then
+                    access_check_warn "An explicit iptables ingress allow exists, but UFW also has ordered FWD rules."
+                    info "Their source/destination match and order require a more detailed rule evaluator."
+                else
+                    access_check_warn "UFW routed default is DENY and no simple explicit ingress FORWARD allow rule was found."
+                    info "A more specific UFW/nftables/iptables rule may still allow the selected source and destination."
+                fi
             else
                 access_check_warn "UFW routed default policy could not be determined."
             fi
@@ -10341,9 +10393,31 @@ access_check_run() {
 }
 
 access_check_menu() {
-    access_check_collect_source || return
-    access_check_collect_destination || return
-    access_check_run
+    local choice
+    while :; do
+        banner
+        section "ACCESS CHECK (READ-ONLY)"
+        cat <<'EOF'
+Analyse a forwarded IPv4 path without changing firewall rules, routes,
+interfaces or system settings.
+
+  [1] Start a new access check
+  [B] Back to main menu
+  [E] Exit
+EOF
+        echo
+        read -r -p "Selection: " choice
+        case "${choice}" in
+            1)
+                access_check_collect_source || continue
+                access_check_collect_destination || continue
+                access_check_run
+                ;;
+            b|B|0|"") return ;;
+            e|E) clear_screen; echo "Bye."; exit 0 ;;
+            *) error "Invalid selection."; sleep 1 ;;
+        esac
+    done
 }
 
 main_menu() {

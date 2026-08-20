@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.8**.
+This manual describes **IPsec S2S Manager 1.3.9**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -460,13 +460,13 @@ Deleting a temporary rule also disables and removes its expiry timer. When UFW i
 
 # 10. Read-only access check
 
-Choose **[23] Access Check** to analyse whether a source has the required server-side path toward a destination. Sources can be a manager-known WireGuard client, the IPv4 address of the current SSH client, or a custom ingress interface plus IPv4/CIDR. Destinations can be the complete IPv4 Internet, one IPv4 host or one IPv4 CIDR network.
+Choose **[23] Access Check** to analyse whether a source has the required server-side path toward a destination. The dedicated submenu remains open after displaying a result. Sources can be a manager-known WireGuard client or a custom IPv4/CIDR. For a custom source, the manager first accepts the network and then lists all detected Linux interfaces and their IPv4 addresses. It marks the interface suggested by the kernel return route, but the operator makes the final selection. The ingress interface is required for an accurate forwarded-packet route simulation and interface-specific firewall checks. Destinations can be the complete IPv4 Internet, one IPv4 host or one IPv4 CIDR network.
 
-The check reads interface state, WireGuard peer and client-export information, `net.ipv4.ip_forward`, the kernel route decision, simple iptables forwarding evidence, UFW's routed default policy and—when checking Internet access—an exact MASQUERADE rule. UFW is optional: if it is absent, that fact is reported without treating it as a failure.
+The check reads interface state, WireGuard peer and client-export information, `net.ipv4.ip_forward`, the kernel route decision, simple iptables forwarding evidence, UFW's routed default policy and—when checking Internet access—an exact MASQUERADE rule. Virtual interfaces with the Linux `UP` flag are accepted even when their operational state is displayed as `UNKNOWN`. A live explicit iptables ingress-FORWARD allow is evaluated together with UFW's routed default DENY, because the formatted UFW input-rule list alone does not describe the complete forwarding path. UFW is optional: if it is absent, that fact is reported without treating it as a failure.
 
 Results distinguish confirmed checks, warnings/unknowns and blocking failures. A warning means the manager cannot prove the decision from the available formatted rules; it does not automatically mean traffic is blocked. The check never adds or removes a firewall rule, route, interface, timer or sysctl setting. It is not an end-to-end packet test from the remote client.
 
-The current SSH client IP comes from `SSH_CONNECTION`. This is the address visible to the server and may be a public NAT address. The server cannot reliably discover the remote computer's private LAN CIDR from an SSH session.
+The source screen displays the current SSH peer from `SSH_CONNECTION` only as information. This may be a public NAT address and is not offered as a forwarded source network. The server cannot reliably discover the remote computer's private LAN CIDR from an SSH session.
 
 ---
 
