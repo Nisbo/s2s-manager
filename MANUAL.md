@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.4**.
+This manual describes **IPsec S2S Manager 1.3.5**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -427,7 +427,7 @@ The existing IPsec and WireGuard setup paths continue to manage their own requir
 
 ## 9.1 Add an ALLOW rule
 
-The UFW menu can create permanent or temporary incoming ALLOW rules. The guided form explains each field before asking for input:
+The UFW menu can create permanent or temporary incoming ALLOW rules. The guided form uses four clearly separated steps and explains each field immediately before asking for its input:
 
 - **Protocol:** `tcp` for connection-oriented services such as SSH, HTTP, HTTPS, MQTT and FRP; `udp` for WireGuard, DNS and other datagram services.
 - **Destination port:** one number from 1 through 65535. Enter `80` for normal HTTP or `443` for normal HTTPS—not `http`, `https` or a URL.

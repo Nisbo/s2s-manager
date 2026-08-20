@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.4
+# Version 1.3.5
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.4"
+VERSION="1.3.5"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -3047,37 +3047,44 @@ prompt_ufw_rule_details() {
     local protocol port source description normalized
 
     banner
-    section "FIREWALL RULE DETAILS"
-    cat <<'EOF'
-Create one incoming ALLOW rule.
+    section "ADD FIREWALL RULE"
+    echo "Create one incoming ALLOW rule in four guided steps."
 
-Protocol:
-  TCP  connection-oriented services such as SSH, HTTP, HTTPS, MQTT or FRP
-  UDP  datagram services such as WireGuard, DNS or many game/voice services
+    section "STEP 1/4 - PROTOCOL"
+    cat <<'EOF'
+Choose the transport protocol used by the service:
+
+  tcp  connection-oriented services such as SSH, HTTP, HTTPS, MQTT or FRP
+  udp  datagram services such as WireGuard, DNS or many game/voice services
 
 HTTP and HTTPS are application protocols. For a normal web server choose TCP
-with destination port 80 (HTTP) or 443 (HTTPS). Do not enter "http://",
-"https://", a URL, hostname, path or port suffix in an IP/network field.
-
-Source:
-  any                    connections from every IPv4/IPv6 source
-  198.51.100.25          one IPv4 address only
-  192.168.10.0/24        one IPv4 CIDR network
-
-The source field accepts only "any", a plain IPv4 address or an IPv4 CIDR.
-Examples of invalid input: https://example.com, server.example.com, 1.2.3.4:22
+here. Enter only tcp or udp, not http, https, :// or a URL.
 EOF
 
     while :; do
         echo
         read -r -p "Protocol [tcp]: " protocol
         protocol="${protocol:-tcp}"
-        protocol="${protocol,,}"
+        protocol="$(tr '[:upper:]' '[:lower:]' <<< "${protocol}")"
         if [[ "${protocol}" == "tcp" || "${protocol}" == "udp" ]]; then
             break
         fi
         error "Protocol must be tcp or udp. Do not enter http, https or :// here."
     done
+
+    section "STEP 2/4 - DESTINATION PORT"
+    cat <<'EOF'
+Enter one numeric destination port from 1 through 65535.
+
+Common examples:
+  22     SSH
+  80     HTTP
+  443    HTTPS
+  1883   MQTT
+  51820  WireGuard (normally UDP)
+
+Enter only the number. Do not enter tcp/443, https://, :443 or a port range.
+EOF
 
     while :; do
         echo
@@ -3090,11 +3097,25 @@ EOF
         echo "Examples: 22 for SSH, 80 for HTTP, 443 for HTTPS, 51820 for WireGuard."
     done
 
+    section "STEP 3/4 - ALLOWED SOURCE"
+    cat <<'EOF'
+Choose which remote addresses may connect to this local destination port:
+
+  any                    every IPv4/IPv6 source when externally reachable
+  198.51.100.25          one IPv4 address only
+  192.168.10.0/24        one IPv4 CIDR network
+
+This field accepts only "any", a plain IPv4 address or an IPv4 CIDR network.
+Do not enter http://, https://, a hostname, URL path, protocol or appended port.
+
+Invalid examples: https://example.com, server.example.com, 1.2.3.4:22
+EOF
+
     while :; do
         echo
         read -r -p "Allowed source [any]: " source
         source="${source:-any}"
-        source="${source,,}"
+        source="$(tr '[:upper:]' '[:lower:]' <<< "${source}")"
         if [[ "${source}" == "any" ]] || valid_ipv4 "${source}"; then
             break
         fi
@@ -3109,6 +3130,19 @@ EOF
         error "Source must be 'any', one plain IPv4 address or one IPv4 CIDR network."
         echo "Do not include http://, https://, a hostname, path, protocol or port."
     done
+
+    section "STEP 4/4 - DESCRIPTION"
+    cat <<'EOF'
+Enter a short label explaining why the rule exists.
+
+Examples:
+  HTTPS web server
+  MQTT from home network
+  Temporary admin access
+
+The description is stored as the UFW rule comment. Do not enter a command,
+URL or secret. Allowed length: 1-48 characters.
+EOF
 
     while :; do
         echo
