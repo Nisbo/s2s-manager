@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.1**.
+This manual describes **IPsec S2S Manager 1.3.2**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -86,11 +86,11 @@ IPsec requires UDP **500** and **4500**. WireGuard requires its configured UDP l
   [12] Delete tunnel completely                [14] Take over imported tunnel
                                                 [15] Show Take Over backups
 
-  EXPORT / TRANSFER                            SYSTEM / WIREGUARD
+  EXPORT / TRANSFER                            SYSTEM / VPN / FIREWALL
   [16] Tunnel backup / restore                 [20] Show system status
   [17] Create Debian peer bundle               [21] WireGuard
   [18] Transfer Debian peer bundle via SCP
-  [19] Import Debian peer bundle
+  [19] Import Debian peer bundle               [22] UFW
 ```
 
 ---
@@ -411,7 +411,19 @@ WireGuard:   configured UDP port, normally 51820
 SSH:         keep your administration port reachable before enabling UFW
 ```
 
-When UFW is not installed, the manager can continue and reminds you to configure the external/provider firewall.
+Choose **[22] UFW** from the main menu for the dedicated firewall view.
+
+When UFW is installed, the menu reports whether it is active and provides **Show all firewall rules**. This view displays:
+
+- verbose UFW status;
+- all numbered rules;
+- the stored `ufw show added` rules when UFW is inactive.
+
+When UFW is not installed, the menu offers a guarded installation path. It detects the current SSH server port from the active SSH connection or the `sshd` configuration, installs the package and prepares an SSH allow rule with the comment `S2S Manager SSH safety`.
+
+The dedicated installation path intentionally leaves UFW **disabled**. Installing a firewall and immediately enabling a default-deny policy could block HTTP, HTTPS, IPsec, WireGuard or another service that has not been reviewed yet. After installation, inspect the complete stored rule set before enabling UFW.
+
+The existing IPsec and WireGuard setup paths continue to manage their own required UFW rules when requested. When UFW is not used, configure the same ports in the external/provider firewall.
 
 ---
 

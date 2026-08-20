@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.1
+# Version 1.3.2
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.1"
+VERSION="1.3.2"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -408,6 +408,25 @@ ufw_active() {
     ufw_installed || return 1
     status="$(ufw status 2>/dev/null || true)"
     grep -q '^Status: active' <<< "${status}"
+}
+
+valid_port() {
+    local port="$1"
+    [[ "${port}" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+}
+
+detect_ssh_port() {
+    local ssh_port=""
+
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+        ssh_port="$(awk '{print $4}' <<< "${SSH_CONNECTION}")"
+    fi
+    if ! valid_port "${ssh_port}" && command_available sshd; then
+        ssh_port="$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')"
+    fi
+    valid_port "${ssh_port}" || ssh_port="22"
+
+    printf '%s' "${ssh_port}"
 }
 
 preflight_ready() {
@@ -2727,6 +2746,180 @@ prompt_psk() {
 # Firewall management
 # ==============================================================================
 
+ufw_rule_allows_port() {
+    local port="$1"
+    local proto="$2"
+    local rules
+
+    valid_port "${port}" || return 1
+    [[ "${proto}" == "tcp" || "${proto}" == "udp" ]] || return 1
+    ufw_installed || return 1
+
+    rules="$({ ufw status 2>/dev/null || true; ufw show added 2>/dev/null || true; })"
+    grep -Eiq "(^|[[:space:]])${port}(/${proto}|[[:space:]].*${proto})([[:space:]]|$).*ALLOW|ufw[[:space:]]+allow[[:space:]]+${port}/${proto}([[:space:]]|$)" <<< "${rules}"
+}
+
+show_all_ufw_rules() {
+    banner
+    section "UFW FIREWALL RULES"
+
+    if ! ufw_installed; then
+        info "UFW is not installed."
+        pause
+        return
+    fi
+
+    echo "Firewall status:"
+    echo
+    ufw status verbose || true
+
+    echo
+    section "NUMBERED RULES"
+    ufw status numbered || true
+
+    if ! ufw_active; then
+        echo
+        section "CONFIGURED RULES (UFW INACTIVE)"
+        info "UFW is inactive. These stored rules would apply after enabling it."
+        echo
+        ufw show added || true
+    fi
+
+    pause
+}
+
+install_ufw_from_management_menu() {
+    local choice ssh_port
+
+    banner
+    section "INSTALL UFW SAFELY"
+
+    cat <<'EOF'
+UFW is currently not installed.
+
+Installing the package alone does not replace a provider/cloud firewall.
+Before UFW is ever enabled, every required incoming service must have an
+allow rule. Otherwise remote services can become unreachable.
+
+Examples:
+  SSH             configured TCP administration port
+  HTTP            TCP 80
+  HTTPS           TCP 443
+  IKE             UDP 500
+  IPsec NAT-T     UDP 4500
+  WireGuard       configured UDP listen port (normally 51820)
+
+This installation path prepares an SSH allow rule first and deliberately
+leaves UFW disabled. Existing S2S and WireGuard firewall rules are not
+guessed or changed here. They can be reviewed before UFW is enabled later.
+EOF
+
+    ssh_port="$(detect_ssh_port)"
+    echo
+    echo "Detected SSH port: TCP ${ssh_port}"
+    echo
+    echo "  [1] Install UFW and prepare the SSH safety rule"
+    echo "  [B] Back"
+    echo "  [E] Exit"
+    echo
+    read -r -p "Selection: " choice
+
+    case "${choice}" in
+        1) ;;
+        b|B|0) return 0 ;;
+        e|E) clear_screen; echo "Bye."; exit 0 ;;
+        *) error "Invalid selection."; pause; return 1 ;;
+    esac
+
+    echo
+    info "Installing UFW package..."
+    if ! apt-get update >/tmp/s2s-manager-ufw-apt-update.log 2>&1; then
+        error "Package index update failed."
+        echo "See: /tmp/s2s-manager-ufw-apt-update.log"
+        pause
+        return 1
+    fi
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y ufw \
+        >/tmp/s2s-manager-ufw-apt-install.log 2>&1; then
+        error "UFW installation failed."
+        echo "See: /tmp/s2s-manager-ufw-apt-install.log"
+        pause
+        return 1
+    fi
+
+    if ! ufw allow "${ssh_port}/tcp" comment 'S2S Manager SSH safety' >/dev/null; then
+        error "UFW was installed, but the SSH safety rule could not be created."
+        warn "UFW will not be enabled by the manager."
+        pause
+        return 1
+    fi
+
+    echo
+    ok "UFW installed."
+    ok "SSH safety rule prepared for TCP ${ssh_port}."
+    if ufw_rule_allows_port "${ssh_port}" tcp; then
+        ok "The stored SSH allow rule was verified."
+    else
+        warn "The SSH rule could not be verified from UFW output."
+    fi
+    info "UFW remains disabled. No existing network traffic was blocked."
+    echo
+    echo "Use 'Show all firewall rules' to review the complete rule set."
+    pause
+}
+
+ufw_management_menu() {
+    local choice status
+
+    while :; do
+        banner
+        section "UFW FIREWALL MANAGEMENT"
+
+        if ! ufw_installed; then
+            info "UFW is not installed."
+            echo "Provider/cloud firewall rules are separate and are not managed here."
+            echo
+            echo "  [1] Install UFW safely"
+            echo "  [B] Back"
+            echo "  [E] Exit"
+            echo
+            read -r -p "Selection: " choice
+            case "${choice}" in
+                1) install_ufw_from_management_menu ;;
+                b|B|0) return ;;
+                e|E) clear_screen; echo "Bye."; exit 0 ;;
+                *) error "Invalid selection."; sleep 1 ;;
+            esac
+            continue
+        fi
+
+        if ufw_active; then
+            status="ACTIVE"
+            ok "UFW is installed and active."
+        else
+            status="INACTIVE"
+            warn "UFW is installed but inactive."
+            info "Stored rules are not currently filtering traffic."
+        fi
+
+        echo
+        printf 'Status: %s\n' "${status}"
+        echo
+        echo "  [1] Show all firewall rules"
+        echo "  [B] Back"
+        echo "  [E] Exit"
+        echo
+        read -r -p "Selection: " choice
+
+        case "${choice}" in
+            1) show_all_ufw_rules ;;
+            b|B|0) return ;;
+            e|E) clear_screen; echo "Bye."; exit 0 ;;
+            *) error "Invalid selection."; sleep 1 ;;
+        esac
+    done
+}
+
 ufw_comment_exists() {
     local comment="$1"
     local status
@@ -2766,14 +2959,7 @@ Web servers, mail servers, VPN servers and other custom services are
 NOT opened automatically.
 EOF
 
-        ssh_port=""
-        if [[ -n "${SSH_CONNECTION:-}" ]]; then
-            ssh_port="$(awk '{print $4}' <<<"${SSH_CONNECTION}")"
-        fi
-        if [[ -z "${ssh_port}" ]] && command_available sshd; then
-            ssh_port="$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')"
-        fi
-        [[ -n "${ssh_port}" ]] || ssh_port="22"
+        ssh_port="$(detect_ssh_port)"
 
         echo
         echo "Detected SSH port: TCP ${ssh_port}"
@@ -6311,12 +6497,7 @@ explicitly allowed may be blocked.
 IMPORTANT:
 Before enabling UFW, make sure every service you still need is allowed.
 EOF
-        ssh_port=""
-        [[ -n "${SSH_CONNECTION:-}" ]] && ssh_port="$(awk '{print $4}' <<< "${SSH_CONNECTION}")"
-        if [[ -z "${ssh_port}" ]] && command_available sshd; then
-            ssh_port="$(sshd -T 2>/dev/null | awk '$1=="port"{print $2;exit}')"
-        fi
-        [[ -n "${ssh_port}" ]] || ssh_port="22"
+        ssh_port="$(detect_ssh_port)"
 
         echo
         echo "Detected SSH port: TCP ${ssh_port}"
@@ -9265,6 +9446,7 @@ main_menu() {
         local -a menu_system=(
             "  [20] Show system status"
             "  [21] WireGuard"
+            "  [22] UFW"
         )
 
         render_menu_pair \
@@ -9277,7 +9459,7 @@ main_menu() {
 
         render_menu_pair \
             "EXPORT / TRANSFER" "${C_GREEN}" menu_export \
-            "SYSTEM / WIREGUARD" "${C_CYAN}" menu_system
+            "SYSTEM / VPN / FIREWALL" "${C_CYAN}" menu_system
 
         echo
         echo "  [E] Exit"
@@ -9308,6 +9490,7 @@ main_menu() {
             19) import_debian_peer_bundle ;;
             20) show_system_status ;;
             21) wireguard_menu ;;
+            22) ufw_management_menu ;;
             [eE]|0) clear_screen; echo "Bye."; exit 0 ;;
             *) error "Invalid selection."; sleep 1 ;;
         esac

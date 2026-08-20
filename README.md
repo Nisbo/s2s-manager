@@ -53,6 +53,16 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - WireGuard status, live handshakes and RX/TX counters
 - Optional UFW rule for the configured WireGuard UDP port
 
+### UFW firewall management
+
+- Dedicated **[22] UFW** main-menu entry
+- Detect whether UFW is installed and whether it is active
+- Offer safe package installation when UFW is missing
+- Detect the current SSH server port and prepare its allow rule first
+- Keep UFW disabled after installation so existing traffic is not unexpectedly blocked
+- Show verbose status, all numbered rules and stored rules while UFW is inactive
+- Keep provider/cloud firewall management explicitly separate
+
 ## Requirements
 
 - Debian **13**
@@ -101,7 +111,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.1                          ║
+║                       Version 1.3.2                          ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────
@@ -126,12 +136,12 @@ Important managed paths include:
   [12] Delete tunnel completely                [14] Take over imported tunnel
                                                 [15] Show Take Over backups
 
-  EXPORT / TRANSFER                            SYSTEM / WIREGUARD
+  EXPORT / TRANSFER                            SYSTEM / VPN / FIREWALL
   ─────────────────────────────────────────    ────────────────────────────────────────
   [16] Tunnel backup / restore                 [20] Show system status
   [17] Create Debian peer bundle               [21] WireGuard
   [18] Transfer Debian peer bundle via SCP
-  [19] Import Debian peer bundle
+  [19] Import Debian peer bundle               [22] UFW
 
   [E] Exit
 ```
@@ -163,6 +173,12 @@ Choose **[21] WireGuard**. On a new server, create a manager-owned WireGuard ser
 For a managed server, open **WireGuard clients → Add client**. The generated client uses a `/32` address such as `10.250.0.2/32`; this is correct for an individual WireGuard peer even though the server owns the complete `/24` VPN network. The client receives `AllowedIPs = 0.0.0.0/0`, so IPv4 Internet traffic is sent through the VPN server.
 
 The client can then be imported using its generated `.conf` file or the QR-code view. Existing imported peers can remain connected and be removed/renamed in manager state after migration, but their original client private keys are not present on the server, so their complete client configuration and QR code cannot be reconstructed.
+
+## Quick start: UFW firewall status
+
+Choose **[22] UFW**. If UFW is installed, use **Show all firewall rules** to display its verbose status, numbered rules and—when inactive—the rules stored for later activation.
+
+If UFW is missing, the manager can install it and prepare an allow rule for the detected SSH administration port. This first implementation deliberately leaves UFW disabled after installation. Review all required HTTP, HTTPS, IPsec, WireGuard and custom-service ports before enabling it manually or extending its rule set.
 
 ## Safety model
 
