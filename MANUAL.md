@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.2**.
+This manual describes **IPsec S2S Manager 1.3.3**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -415,8 +415,8 @@ Choose **[22] UFW** from the main menu for the dedicated firewall view.
 
 When UFW is installed, the menu reports whether it is active and provides **Show all firewall rules**. This view displays:
 
-- verbose UFW status;
-- all numbered rules;
+- UFW status, logging and default policies without repeating the rule table;
+- all rules once in a numbered list;
 - the stored `ufw show added` rules when UFW is inactive.
 
 When UFW is not installed, the menu offers a guarded installation path. It detects the current SSH server port from the active SSH connection or the `sshd` configuration, installs the package and prepares an SSH allow rule with the comment `S2S Manager SSH safety`.

@@ -60,7 +60,7 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - Offer safe package installation when UFW is missing
 - Detect the current SSH server port and prepare its allow rule first
 - Keep UFW disabled after installation so existing traffic is not unexpectedly blocked
-- Show verbose status, all numbered rules and stored rules while UFW is inactive
+- Show status/default policies, all numbered rules and stored rules while UFW is inactive
 - Keep provider/cloud firewall management explicitly separate
 
 ## Requirements
@@ -111,7 +111,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.2                          ║
+║                       Version 1.3.3                          ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────
@@ -176,7 +176,7 @@ The client can then be imported using its generated `.conf` file or the QR-code 
 
 ## Quick start: UFW firewall status
 
-Choose **[22] UFW**. If UFW is installed, use **Show all firewall rules** to display its verbose status, numbered rules and—when inactive—the rules stored for later activation.
+Choose **[22] UFW**. If UFW is installed, use **Show all firewall rules** to display its status/default policies, each rule once in a numbered list and—when inactive—the rules stored for later activation.
 
 If UFW is missing, the manager can install it and prepare an allow rule for the detected SSH administration port. This first implementation deliberately leaves UFW disabled after installation. Review all required HTTP, HTTPS, IPsec, WireGuard and custom-service ports before enabling it manually or extending its rule set.
 

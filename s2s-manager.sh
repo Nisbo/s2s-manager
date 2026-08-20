@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.2
+# Version 1.3.3
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.2"
+VERSION="1.3.3"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -2769,9 +2769,14 @@ show_all_ufw_rules() {
         return
     fi
 
-    echo "Firewall status:"
+    echo "Firewall status and default policies:"
     echo
-    ufw status verbose || true
+    # `ufw status verbose` also prints the full rule table. Stop before that
+    # table because the same rules are shown once, with numbers, below.
+    ufw status verbose 2>&1 | awk '
+        /^To[[:space:]]+Action[[:space:]]+From/ { exit }
+        { print }
+    ' || true
 
     echo
     section "NUMBERED RULES"
