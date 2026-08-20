@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.11
+# Version 1.3.12
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.11"
+VERSION="1.3.12"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -3517,6 +3517,141 @@ EOF
     pause
 }
 
+ufw_boot_enabled() {
+    grep -Eq '^[[:space:]]*ENABLED[[:space:]]*=[[:space:]]*yes[[:space:]]*$' /etc/ufw/ufw.conf 2>/dev/null
+}
+
+ufw_ssh_safety_rule_present() {
+    local ssh_port="$1" ssh_client
+    ssh_client="$(awk '{print $1}' <<< "${SSH_CONNECTION:-}")"
+    if valid_ipv4 "${ssh_client}"; then
+        access_check_ufw_allows_local_service "${ssh_port}" tcp "${ssh_client}/32"
+    else
+        ufw_rule_allows_port "${ssh_port}" tcp
+    fi
+}
+
+enable_ufw_safely() {
+    local ssh_port confirm output
+    banner
+    section "ENABLE UFW SAFELY"
+
+    ufw_installed || { error "UFW is not installed."; pause; return 1; }
+    if ufw_active; then
+        info "UFW is already active."
+        ufw_boot_enabled && ok "UFW is configured to load at boot." || warn "UFW boot configuration could not be confirmed."
+        pause
+        return 0
+    fi
+
+    ssh_port="$(detect_ssh_port)"
+    echo "Detected SSH administration port: TCP ${ssh_port}"
+    echo
+    if ! ufw_ssh_safety_rule_present "${ssh_port}"; then
+        error "No stored ALLOW IN rule covering the current SSH client on TCP ${ssh_port} was found."
+        error "The manager refuses to enable UFW because the remote session could be locked out."
+        echo
+        echo "Add and review the SSH rule first, then run this safety check again."
+        pause
+        return 1
+    fi
+    ok "Stored SSH access rule verified for TCP ${ssh_port}."
+
+    echo
+    section "RULES THAT WILL BECOME ACTIVE"
+    print_annotated_ufw_added_rules
+    echo
+    warn "Enabling UFW applies the stored rules immediately and enables UFW at boot."
+    warn "Any service without a matching allow rule may become unreachable."
+    info "Provider/cloud firewall rules remain separate."
+    echo
+    read -r -p "Type ENABLE to activate UFW now: " confirm
+    [[ "${confirm}" == "ENABLE" ]] || { info "UFW was not enabled."; pause; return 0; }
+
+    if ! output="$(ufw --force enable 2>&1)"; then
+        error "UFW could not be enabled."
+        [[ -n "${output}" ]] && printf '%s\n' "${output}"
+        pause
+        return 1
+    fi
+    [[ -n "${output}" ]] && printf '%s\n' "${output}"
+    echo
+    if ufw_active; then
+        ok "UFW is active now."
+    else
+        error "The enable command completed, but UFW does not report active status."
+        pause
+        return 1
+    fi
+    if ufw_boot_enabled; then
+        ok "UFW is enabled for automatic loading at boot."
+    else
+        error "UFW is active, but /etc/ufw/ufw.conf does not confirm boot activation."
+        warn "Review the UFW package/service configuration before rebooting."
+    fi
+    pause
+}
+
+disable_ufw_safely() {
+    local confirm output
+    banner
+    section "DISABLE UFW"
+    ufw_installed || { error "UFW is not installed."; pause; return 1; }
+    if ! ufw_active; then
+        info "UFW is already inactive. Stored rules are preserved."
+        pause
+        return 0
+    fi
+    warn "Disabling UFW removes its active firewall protection immediately."
+    echo "Stored rules are preserved, but UFW will also remain disabled after reboot."
+    echo
+    read -r -p "Type DISABLE to turn off UFW: " confirm
+    [[ "${confirm}" == "DISABLE" ]] || { info "UFW remains active."; pause; return 0; }
+    if ! output="$(ufw disable 2>&1)"; then
+        error "UFW could not be disabled."
+        [[ -n "${output}" ]] && printf '%s\n' "${output}"
+        pause
+        return 1
+    fi
+    [[ -n "${output}" ]] && printf '%s\n' "${output}"
+    if ufw_active; then
+        error "UFW still reports active status."
+    else
+        ok "UFW is inactive. Stored rules were preserved."
+        ufw_boot_enabled && warn "Boot configuration still reports enabled; review /etc/ufw/ufw.conf." || ok "UFW is disabled at boot."
+    fi
+    pause
+}
+
+reload_ufw_safely() {
+    local ssh_port confirm output
+    banner
+    section "RELOAD UFW"
+    ufw_installed || { error "UFW is not installed."; pause; return 1; }
+    ufw_active || { error "UFW is inactive. Enable it safely instead of reloading it."; pause; return 1; }
+    ssh_port="$(detect_ssh_port)"
+    if ! ufw_ssh_safety_rule_present "${ssh_port}"; then
+        error "No ALLOW IN rule covering the current SSH client on TCP ${ssh_port} was found."
+        error "The manager refuses to reload UFW because the remote session could be locked out."
+        pause
+        return 1
+    fi
+    echo "Reloading re-applies the complete stored UFW configuration."
+    echo "Normal ufw allow/delete operations are applied immediately and usually need no reload."
+    echo
+    read -r -p "Reload UFW now? [y/N]: " confirm
+    [[ "$(tr '[:upper:]' '[:lower:]' <<< "${confirm}")" == "y" ]] || { info "UFW was not reloaded."; pause; return 0; }
+    if ! output="$(ufw reload 2>&1)"; then
+        error "UFW reload failed."
+        [[ -n "${output}" ]] && printf '%s\n' "${output}"
+        pause
+        return 1
+    fi
+    [[ -n "${output}" ]] && printf '%s\n' "${output}"
+    ufw_active && ok "UFW reloaded and remains active." || error "UFW no longer reports active status after reload."
+    pause
+}
+
 ufw_management_menu() {
     local choice status
 
@@ -3553,11 +3688,19 @@ ufw_management_menu() {
 
         echo
         printf 'Status: %s\n' "${status}"
+        if ufw_boot_enabled; then
+            printf 'Boot:   ENABLED\n'
+        else
+            printf 'Boot:   DISABLED\n'
+        fi
         echo
         echo "  [1] Show all firewall rules"
         echo "  [2] Add permanent ALLOW rule"
         echo "  [3] Add temporary ALLOW rule with expiry timer"
         echo "  [4] Delete firewall rule"
+        echo "  [5] Enable UFW safely"
+        echo "  [6] Disable UFW"
+        echo "  [7] Reload UFW"
         echo "  [B] Back"
         echo "  [E] Exit"
         echo
@@ -3568,6 +3711,9 @@ ufw_management_menu() {
             2) add_ufw_rule permanent ;;
             3) add_ufw_rule temporary ;;
             4) delete_ufw_rule ;;
+            5) enable_ufw_safely ;;
+            6) disable_ufw_safely ;;
+            7) reload_ufw_safely ;;
             b|B|0) return ;;
             e|E) clear_screen; echo "Bye."; exit 0 ;;
             *) error "Invalid selection."; sleep 1 ;;

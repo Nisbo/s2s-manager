@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.11**.
+This manual describes **IPsec S2S Manager 1.3.12**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -457,6 +457,14 @@ This design intentionally does not insert an unmanaged runtime-only iptables/nft
 When UFW is active, choose a numbered rule, review its complete line and type `DELETE`. The manager refuses to delete the rule protecting the detected current SSH administration port. WireGuard, UDP 500/4500 and ESP rules receive a prominent VPN-disconnection warning.
 
 Deleting a temporary rule also disables and removes its expiry timer. When UFW is inactive it does not expose numbered live rules, so general deletion by number is not offered; stored rules remain visible in the rule overview.
+
+## 9.4 Enable, disable and reload UFW
+
+**Enable UFW safely** detects the current SSH administration port and refuses activation unless a stored TCP ALLOW rule covers the current SSH client where that address is available. It displays every stored rule again and requires the exact word `ENABLE`. A successful `ufw --force enable` loads the firewall immediately and enables it at boot; the manager verifies live status and `ENABLED=yes` in `/etc/ufw/ufw.conf` afterwards.
+
+**Disable UFW** requires the exact word `DISABLE`. It unloads the firewall and disables boot activation but preserves all stored rules. **Reload UFW** is offered only while active, repeats the SSH safety check, and re-applies the complete rule set. Normal rule additions and deletions are effective immediately and generally do not need a reload.
+
+Enabling or reloading UFW can flush and rebuild its chains. The SSH rule check reduces remote lockout risk, but provider/cloud firewalls and services bound to the wrong address remain outside UFW's control.
 
 ---
 

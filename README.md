@@ -65,6 +65,8 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - Add temporary allow rules with a persistent systemd expiry timer (15 minutes through 7 days)
 - Highlight temporary rules in yellow and show their expiry as `[TEMP until ...]`
 - Delete numbered active rules with preview, typed confirmation and SSH/VPN protection
+- Safely enable UFW only after verifying an SSH rule, with immediate and boot-state checks
+- Disable UFW while preserving stored rules, or explicitly reload an active firewall
 - Reject duplicate rules so an existing permanent rule cannot accidentally become temporary
 - Keep provider/cloud firewall management explicitly separate
 
@@ -125,7 +127,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.11                         ║
+║                       Version 1.3.12                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────
@@ -198,6 +200,8 @@ If UFW is missing, the manager can install it and prepare an allow rule for the 
 Permanent and temporary incoming ALLOW rules can be added for TCP or UDP. The guided form presents protocol, destination port, allowed source and description as four separate steps, with the relevant explanation immediately before each input. Use `B` in any step to cancel the wizard and return to UFW management, or `E` to exit the program. The source may be `any`, one plain IPv4 address or one IPv4 CIDR network. URL syntax such as `https://`, hostnames and values containing `:port` are not accepted in the source field.
 
 Temporary rules use an on-disk systemd timer and are highlighted in yellow with their expiry time. Permanent rules keep the normal UFW display without an additional label. The internal timer identifier is hidden from the user-facing rule list; only the entered description and `[TEMP until …]` are shown for temporary rules. The timer survives a reboot and removes the matching UFW rule at expiry. Rules can be deleted by number while UFW is active. The manager refuses to delete the detected current SSH rule and shows an additional warning for WireGuard, IKE, NAT-T and ESP rules.
+
+The UFW menu can safely enable, disable and reload the firewall. Activation is refused unless a stored TCP rule covers the detected SSH administration port and, when available, the current SSH client address. Before `ENABLE` is accepted, all rules that will become active are shown again. The manager then verifies both live UFW status and `/etc/ufw/ufw.conf` boot activation. Disabling requires typing `DISABLE`, unloads UFW and disables it at boot while preserving stored rules. Reload is available only while active and repeats the SSH safety check; ordinary `ufw allow` and `ufw delete` operations take effect immediately and normally do not require it.
 
 Choose **[23] Access Check** for a read-only server-side path analysis. Its own submenu remains open after a result. Select a managed WireGuard client or enter a custom source IPv4 network; for custom sources the manager lists all Linux interfaces with their IPv4 addresses and marks the interface suggested by the return route. The selected ingress interface is required for forwarded-route simulation and interface-specific firewall evaluation. Internet, host and CIDR destinations check a forwarded path. **Service on this Debian server** instead asks for TCP/UDP and a local port, verifies a non-loopback listener, and checks whether a matching UFW INPUT rule covers the selected source—including a broader source CIDR. A live explicit iptables FORWARD allow is evaluated together with UFW's routed default policy instead of treating UFW's default DENY as an automatic blocker. Results include a prominent `INTERNET ACCESS`, `ROUTED NETWORK ACCESS`, or `LOCAL SERVICE ACCESS` verdict. No check adds rules or sends traffic as the remote client; only a real test from that device can prove end-to-end access.
 
