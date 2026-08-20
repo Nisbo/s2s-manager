@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.5
+# Version 1.3.6
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.5"
+VERSION="1.3.6"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -2949,8 +2949,14 @@ format_ufw_expiry() {
     date -d "@${epoch}" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || printf 'epoch %s' "${epoch}"
 }
 
+sanitize_ufw_rule_display() {
+    sed -E \
+        -e 's/S2S Manager TEMP [A-Za-z0-9_-]+ //' \
+        -e 's/S2S Manager PERM //'
+}
+
 print_annotated_ufw_rules() {
-    local line id label expires now
+    local line display_line id label expires now
     now="$(date +%s)"
 
     while IFS= read -r line; do
@@ -2969,7 +2975,8 @@ print_annotated_ufw_rules() {
                     label="[TEMP - state missing]"
                 fi
             fi
-            printf '%s  %s\n' "${line}" "${label}"
+            display_line="$(sanitize_ufw_rule_display <<< "${line}")"
+            printf '%s  %s\n' "${display_line}" "${label}"
         else
             printf '%s\n' "${line}"
         fi
@@ -2977,7 +2984,7 @@ print_annotated_ufw_rules() {
 }
 
 print_annotated_ufw_added_rules() {
-    local line id label expires now
+    local line display_line id label expires now
     now="$(date +%s)"
 
     while IFS= read -r line; do
@@ -2996,7 +3003,8 @@ print_annotated_ufw_added_rules() {
                     label="[TEMP - state missing]"
                 fi
             fi
-            printf '%s  %s\n' "${line}" "${label}"
+            display_line="$(sanitize_ufw_rule_display <<< "${line}")"
+            printf '%s  %s\n' "${display_line}" "${label}"
         else
             printf '%s\n' "${line}"
         fi
@@ -3059,11 +3067,18 @@ Choose the transport protocol used by the service:
 
 HTTP and HTTPS are application protocols. For a normal web server choose TCP
 here. Enter only tcp or udp, not http, https, :// or a URL.
+
+B = cancel this wizard and return to UFW management
+E = exit the program
 EOF
 
     while :; do
         echo
         read -r -p "Protocol [tcp]: " protocol
+        case "${protocol}" in
+            b|B) info "Firewall rule wizard cancelled."; return 1 ;;
+            e|E) clear_screen; echo "Bye."; exit 0 ;;
+        esac
         protocol="${protocol:-tcp}"
         protocol="$(tr '[:upper:]' '[:lower:]' <<< "${protocol}")"
         if [[ "${protocol}" == "tcp" || "${protocol}" == "udp" ]]; then
@@ -3084,11 +3099,18 @@ Common examples:
   51820  WireGuard (normally UDP)
 
 Enter only the number. Do not enter tcp/443, https://, :443 or a port range.
+
+B = cancel this wizard and return to UFW management
+E = exit the program
 EOF
 
     while :; do
         echo
         read -r -p "Destination port (1-65535): " port
+        case "${port}" in
+            b|B) info "Firewall rule wizard cancelled."; return 1 ;;
+            e|E) clear_screen; echo "Bye."; exit 0 ;;
+        esac
         if valid_port "${port}"; then
             port=$((10#${port}))
             break
@@ -3109,11 +3131,18 @@ This field accepts only "any", a plain IPv4 address or an IPv4 CIDR network.
 Do not enter http://, https://, a hostname, URL path, protocol or appended port.
 
 Invalid examples: https://example.com, server.example.com, 1.2.3.4:22
+
+B = cancel this wizard and return to UFW management
+E = exit the program
 EOF
 
     while :; do
         echo
         read -r -p "Allowed source [any]: " source
+        case "${source}" in
+            b|B) info "Firewall rule wizard cancelled."; return 1 ;;
+            e|E) clear_screen; echo "Bye."; exit 0 ;;
+        esac
         source="${source:-any}"
         source="$(tr '[:upper:]' '[:lower:]' <<< "${source}")"
         if [[ "${source}" == "any" ]] || valid_ipv4 "${source}"; then
@@ -3142,11 +3171,18 @@ Examples:
 
 The description is stored as the UFW rule comment. Do not enter a command,
 URL or secret. Allowed length: 1-48 characters.
+
+B = cancel this wizard and return to UFW management
+E = exit the program
 EOF
 
     while :; do
         echo
         read -r -p "Rule description (1-48 characters): " description
+        case "${description}" in
+            b|B) info "Firewall rule wizard cancelled."; return 1 ;;
+            e|E) clear_screen; echo "Bye."; exit 0 ;;
+        esac
         if valid_ufw_rule_description "${description}"; then
             break
         fi
@@ -3178,6 +3214,7 @@ EOF
     echo "  [4] 24 hours"
     echo "  [5] Enter minutes (1-10080 / up to 7 days)"
     echo "  [B] Back"
+    echo "  [E] Exit"
     echo
     read -r -p "Selection: " choice
 
@@ -3195,6 +3232,7 @@ EOF
             fi
             ;;
         b|B|0) return 1 ;;
+        e|E) clear_screen; echo "Bye."; exit 0 ;;
         *) error "Invalid selection."; pause; return 1 ;;
     esac
 

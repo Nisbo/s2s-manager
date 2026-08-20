@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.5**.
+This manual describes **IPsec S2S Manager 1.3.6**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -434,13 +434,15 @@ The UFW menu can create permanent or temporary incoming ALLOW rules. The guided 
 - **Allowed source:** `any`, one plain IPv4 address such as `198.51.100.25`, or one IPv4 CIDR such as `192.168.10.0/24`. Do not enter `http://`, `https://`, a hostname, path, protocol or appended port.
 - **Description:** a short safe label used as the UFW comment.
 
+At every input step, `B` cancels the complete rule wizard and returns to UFW management; `E` exits the manager.
+
 The manager shows a complete preview and warns when source `any` exposes the port to every externally reachable source. An equivalent existing rule is rejected instead of changing its comment or lifetime classification.
 
 ## 9.2 Temporary rules
 
 A temporary rule is a normal UFW rule plus a manager-owned systemd timer. Available defaults are 15 minutes, 1 hour, 8 hours and 24 hours; a custom duration from 1 through 10080 minutes (7 days) is also supported.
 
-Timer units are stored under `/etc/systemd/system/`, and rule metadata is stored under `/root/s2s-manager/firewall/temporary/`. `Persistent=true` ensures that systemd processes a missed expiry after a reboot. The rule list identifies these entries as `[TEMP until ...]`; all other UFW rules are marked `[PERMANENT]`.
+Timer units are stored under `/etc/systemd/system/`, and rule metadata is stored under `/root/s2s-manager/firewall/temporary/`. `Persistent=true` ensures that systemd processes a missed expiry after a reboot. The rule list identifies these entries as `[TEMP until ...]`; all other UFW rules are marked `[PERMANENT]`. Internal timestamp/random timer identifiers remain in the underlying UFW comment for safe correlation but are removed from the user-facing display.
 
 This design intentionally does not insert an unmanaged runtime-only iptables/nftables rule. Such rules are not represented reliably by UFW and can disappear during reload or reboot.
 
