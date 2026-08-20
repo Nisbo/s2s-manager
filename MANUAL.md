@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.3**.
+This manual describes **IPsec S2S Manager 1.3.4**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -424,6 +424,31 @@ When UFW is not installed, the menu offers a guarded installation path. It detec
 The dedicated installation path intentionally leaves UFW **disabled**. Installing a firewall and immediately enabling a default-deny policy could block HTTP, HTTPS, IPsec, WireGuard or another service that has not been reviewed yet. After installation, inspect the complete stored rule set before enabling UFW.
 
 The existing IPsec and WireGuard setup paths continue to manage their own required UFW rules when requested. When UFW is not used, configure the same ports in the external/provider firewall.
+
+## 9.1 Add an ALLOW rule
+
+The UFW menu can create permanent or temporary incoming ALLOW rules. The guided form explains each field before asking for input:
+
+- **Protocol:** `tcp` for connection-oriented services such as SSH, HTTP, HTTPS, MQTT and FRP; `udp` for WireGuard, DNS and other datagram services.
+- **Destination port:** one number from 1 through 65535. Enter `80` for normal HTTP or `443` for normal HTTPS—not `http`, `https` or a URL.
+- **Allowed source:** `any`, one plain IPv4 address such as `198.51.100.25`, or one IPv4 CIDR such as `192.168.10.0/24`. Do not enter `http://`, `https://`, a hostname, path, protocol or appended port.
+- **Description:** a short safe label used as the UFW comment.
+
+The manager shows a complete preview and warns when source `any` exposes the port to every externally reachable source. An equivalent existing rule is rejected instead of changing its comment or lifetime classification.
+
+## 9.2 Temporary rules
+
+A temporary rule is a normal UFW rule plus a manager-owned systemd timer. Available defaults are 15 minutes, 1 hour, 8 hours and 24 hours; a custom duration from 1 through 10080 minutes (7 days) is also supported.
+
+Timer units are stored under `/etc/systemd/system/`, and rule metadata is stored under `/root/s2s-manager/firewall/temporary/`. `Persistent=true` ensures that systemd processes a missed expiry after a reboot. The rule list identifies these entries as `[TEMP until ...]`; all other UFW rules are marked `[PERMANENT]`.
+
+This design intentionally does not insert an unmanaged runtime-only iptables/nftables rule. Such rules are not represented reliably by UFW and can disappear during reload or reboot.
+
+## 9.3 Delete a rule
+
+When UFW is active, choose a numbered rule, review its complete line and type `DELETE`. The manager refuses to delete the rule protecting the detected current SSH administration port. WireGuard, UDP 500/4500 and ESP rules receive a prominent VPN-disconnection warning.
+
+Deleting a temporary rule also disables and removes its expiry timer. When UFW is inactive it does not expose numbered live rules, so general deletion by number is not offered; stored rules remain visible in the rule overview.
 
 ---
 

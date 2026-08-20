@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.3
+# Version 1.3.4
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.3"
+VERSION="1.3.4"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -63,6 +63,10 @@ WG_INTERFACE_DEFAULT="wg0"
 WG_NETWORK_DEFAULT="10.250.0.0/24"
 WG_PORT_DEFAULT="51820"
 WG_DNS_DEFAULT="1.1.1.1"
+
+UFW_STATE_DIR="${STATE_DIR}/firewall"
+UFW_TEMP_DIR="${UFW_STATE_DIR}/temporary"
+UFW_TIMER_PREFIX="s2s-manager-ufw-temp"
 
 SWANCTL_DIR="/etc/swanctl/conf.d"
 MANAGED_PREFIX="s2s-manager"
@@ -333,9 +337,11 @@ ensure_root() {
 
 init_state_dirs() {
     mkdir -p "${TUNNEL_DIR}" "${ROUTE_DIR}" "${SECRET_DIR}" "${BACKUP_DIR}" "${EXPORT_DIR}" \
-        "${WG_DIR}" "${WG_CLIENT_DIR}" "${WG_CLIENT_EXPORT_DIR}" "${WG_BACKUP_DIR}"
+        "${WG_DIR}" "${WG_CLIENT_DIR}" "${WG_CLIENT_EXPORT_DIR}" "${WG_BACKUP_DIR}" \
+        "${UFW_STATE_DIR}" "${UFW_TEMP_DIR}"
     chmod 700 "${STATE_DIR}" "${TUNNEL_DIR}" "${ROUTE_DIR}" "${SECRET_DIR}" "${BACKUP_DIR}" "${EXPORT_DIR}" \
-        "${WG_DIR}" "${WG_CLIENT_DIR}" "${WG_CLIENT_EXPORT_DIR}" "${WG_BACKUP_DIR}"
+        "${WG_DIR}" "${WG_CLIENT_DIR}" "${WG_CLIENT_EXPORT_DIR}" "${WG_BACKUP_DIR}" \
+        "${UFW_STATE_DIR}" "${UFW_TEMP_DIR}"
 }
 
 debian_major_version() {
@@ -412,7 +418,10 @@ ufw_active() {
 
 valid_port() {
     local port="$1"
-    [[ "${port}" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+    local number
+    [[ "${port}" =~ ^[0-9]+$ ]] || return 1
+    number=$((10#${port}))
+    (( number >= 1 && number <= 65535 ))
 }
 
 detect_ssh_port() {
@@ -2759,6 +2768,241 @@ ufw_rule_allows_port() {
     grep -Eiq "(^|[[:space:]])${port}(/${proto}|[[:space:]].*${proto})([[:space:]]|$).*ALLOW|ufw[[:space:]]+allow[[:space:]]+${port}/${proto}([[:space:]]|$)" <<< "${rules}"
 }
 
+ufw_allow_rule_spec_exists() {
+    local port="$1" proto="$2" source="$3"
+    local status added
+
+    valid_port "${port}" || return 1
+    [[ "${proto}" == "tcp" || "${proto}" == "udp" ]] || return 1
+    ufw_installed || return 1
+
+    status="$(ufw status 2>/dev/null || true)"
+    added="$(ufw show added 2>/dev/null || true)"
+
+    if [[ "${source}" == "any" ]]; then
+        grep -Eq "(^|[[:space:]])${port}/${proto}([[:space:]]|$).*ALLOW.*Anywhere" <<< "${status}" && return 0
+        grep -Eq "(^|[[:space:]])ufw[[:space:]]+allow([[:space:]]+in)?[[:space:]]+${port}/${proto}([[:space:]]|$)" <<< "${added}" && return 0
+    else
+        grep -F "${port}/${proto}" <<< "${status}" | grep -Fq "${source}" && return 0
+        grep -F "allow from ${source} to any port ${port} proto ${proto}" <<< "${added}" >/dev/null && return 0
+    fi
+
+    return 1
+}
+
+valid_ufw_rule_description() {
+    local value="$1"
+    local pattern='^[A-Za-z0-9ÄÖÜäöüß][A-Za-z0-9ÄÖÜäöüß._: -]*$'
+    [[ -n "${value}" && ${#value} -le 48 ]] || return 1
+    [[ "${value}" =~ ${pattern} ]]
+}
+
+ufw_temp_state_file() {
+    printf '%s/%s.rule' "${UFW_TEMP_DIR}" "$1"
+}
+
+ufw_temp_service_name() {
+    printf '%s-%s.service' "${UFW_TIMER_PREFIX}" "$1"
+}
+
+ufw_temp_timer_name() {
+    printf '%s-%s.timer' "${UFW_TIMER_PREFIX}" "$1"
+}
+
+load_ufw_temp_rule() {
+    local id="$1"
+    local state_file
+    state_file="$(ufw_temp_state_file "${id}")"
+    [[ -f "${state_file}" ]] || return 1
+
+    unset UFW_TEMP_ID UFW_TEMP_PORT UFW_TEMP_PROTO UFW_TEMP_SOURCE
+    unset UFW_TEMP_DESCRIPTION UFW_TEMP_COMMENT UFW_TEMP_CREATED UFW_TEMP_EXPIRES
+    # Manager-created state only.
+    # shellcheck disable=SC1090
+    source "${state_file}"
+
+    [[ "${UFW_TEMP_ID:-}" == "${id}" ]] || return 1
+    valid_port "${UFW_TEMP_PORT:-}" || return 1
+    [[ "${UFW_TEMP_PROTO:-}" == "tcp" || "${UFW_TEMP_PROTO:-}" == "udp" ]] || return 1
+    [[ "${UFW_TEMP_SOURCE:-}" == "any" ]] || valid_ipv4 "${UFW_TEMP_SOURCE:-}" || valid_cidr "${UFW_TEMP_SOURCE:-}" || return 1
+    [[ "${UFW_TEMP_EXPIRES:-}" =~ ^[0-9]+$ ]] || return 1
+}
+
+save_ufw_temp_rule() {
+    local id="$1" port="$2" proto="$3" source="$4" description="$5"
+    local comment="$6" created="$7" expires="$8"
+    local state_file
+    state_file="$(ufw_temp_state_file "${id}")"
+
+    mkdir -p "${UFW_TEMP_DIR}"
+    {
+        printf 'UFW_TEMP_ID=%q\n' "${id}"
+        printf 'UFW_TEMP_PORT=%q\n' "${port}"
+        printf 'UFW_TEMP_PROTO=%q\n' "${proto}"
+        printf 'UFW_TEMP_SOURCE=%q\n' "${source}"
+        printf 'UFW_TEMP_DESCRIPTION=%q\n' "${description}"
+        printf 'UFW_TEMP_COMMENT=%q\n' "${comment}"
+        printf 'UFW_TEMP_CREATED=%q\n' "${created}"
+        printf 'UFW_TEMP_EXPIRES=%q\n' "${expires}"
+    } > "${state_file}"
+    chmod 600 "${state_file}"
+}
+
+build_ufw_rule_args() {
+    local port="$1" proto="$2" source="$3"
+    UFW_RULE_ARGS=(allow)
+    if [[ "${source}" == "any" ]]; then
+        UFW_RULE_ARGS+=("${port}/${proto}")
+    else
+        UFW_RULE_ARGS+=(from "${source}" to any port "${port}" proto "${proto}")
+    fi
+}
+
+ufw_temp_rule_comment_exists() {
+    local comment="$1"
+    local rules
+    ufw_installed || return 1
+    rules="$({ ufw status 2>/dev/null || true; ufw show added 2>/dev/null || true; })"
+    grep -Fq "${comment}" <<< "${rules}"
+}
+
+remove_ufw_temp_timer_files() {
+    local id="$1"
+    local service timer
+    service="$(ufw_temp_service_name "${id}")"
+    timer="$(ufw_temp_timer_name "${id}")"
+
+    systemctl disable --now "${timer}" >/dev/null 2>&1 || true
+    rm -f -- "${SYSTEMD_DIR}/${service}" "${SYSTEMD_DIR}/${timer}"
+    rm -f -- "$(ufw_temp_state_file "${id}")"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+reconcile_ufw_temp_rules() {
+    local state_file id now changed=0
+    now="$(date +%s)"
+
+    shopt -s nullglob
+    for state_file in "${UFW_TEMP_DIR}"/*.rule; do
+        id="$(basename "${state_file}" .rule)"
+        if ! load_ufw_temp_rule "${id}"; then
+            warn "Invalid temporary UFW state: ${state_file}"
+            continue
+        fi
+        if (( UFW_TEMP_EXPIRES <= now )) && ! ufw_temp_rule_comment_exists "${UFW_TEMP_COMMENT}"; then
+            remove_ufw_temp_timer_files "${id}"
+            changed=1
+        fi
+    done
+    shopt -u nullglob
+
+    return $(( changed == 1 ? 0 : 1 ))
+}
+
+schedule_ufw_temp_rule() {
+    local id="$1" port="$2" proto="$3" source="$4" description="$5"
+    local comment="$6" expires="$7"
+    local service timer ufw_path calendar exec_line
+
+    service="$(ufw_temp_service_name "${id}")"
+    timer="$(ufw_temp_timer_name "${id}")"
+    ufw_path="$(command -v ufw)"
+    [[ "${ufw_path}" == /* ]] || return 1
+    calendar="$(date -u -d "@${expires}" '+%Y-%m-%d %H:%M:%S UTC')" || return 1
+
+    if [[ "${source}" == "any" ]]; then
+        exec_line="${ufw_path} --force delete allow ${port}/${proto} comment \"${comment}\""
+    else
+        exec_line="${ufw_path} --force delete allow from ${source} to any port ${port} proto ${proto} comment \"${comment}\""
+    fi
+
+    cat > "${SYSTEMD_DIR}/${service}" <<EOF
+[Unit]
+Description=Expire temporary UFW rule ${id}
+
+[Service]
+Type=oneshot
+ExecStart=${exec_line}
+EOF
+
+    cat > "${SYSTEMD_DIR}/${timer}" <<EOF
+[Unit]
+Description=Expiry timer for temporary UFW rule ${id}
+
+[Timer]
+OnCalendar=${calendar}
+Persistent=true
+AccuracySec=1s
+Unit=${service}
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    chmod 644 "${SYSTEMD_DIR}/${service}" "${SYSTEMD_DIR}/${timer}"
+    systemctl daemon-reload || return 1
+    systemctl enable --now "${timer}" || return 1
+}
+
+format_ufw_expiry() {
+    local epoch="$1"
+    date -d "@${epoch}" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || printf 'epoch %s' "${epoch}"
+}
+
+print_annotated_ufw_rules() {
+    local line id label expires now
+    now="$(date +%s)"
+
+    while IFS= read -r line; do
+        if [[ "${line}" =~ ^\[[[:space:]]*[0-9]+\] ]]; then
+            label="[PERMANENT]"
+            if [[ "${line}" =~ S2S[[:space:]]Manager[[:space:]]TEMP[[:space:]]([A-Za-z0-9_-]+) ]]; then
+                id="${BASH_REMATCH[1]}"
+                if load_ufw_temp_rule "${id}"; then
+                    expires="$(format_ufw_expiry "${UFW_TEMP_EXPIRES}")"
+                    if (( UFW_TEMP_EXPIRES <= now )); then
+                        label="[TEMP EXPIRED - cleanup pending: ${expires}]"
+                    else
+                        label="[TEMP until ${expires}]"
+                    fi
+                else
+                    label="[TEMP - state missing]"
+                fi
+            fi
+            printf '%s  %s\n' "${line}" "${label}"
+        else
+            printf '%s\n' "${line}"
+        fi
+    done < <(ufw status numbered 2>/dev/null || true)
+}
+
+print_annotated_ufw_added_rules() {
+    local line id label expires now
+    now="$(date +%s)"
+
+    while IFS= read -r line; do
+        if [[ "${line}" == ufw\ * ]]; then
+            label="[PERMANENT]"
+            if [[ "${line}" =~ S2S[[:space:]]Manager[[:space:]]TEMP[[:space:]]([A-Za-z0-9_-]+) ]]; then
+                id="${BASH_REMATCH[1]}"
+                if load_ufw_temp_rule "${id}"; then
+                    expires="$(format_ufw_expiry "${UFW_TEMP_EXPIRES}")"
+                    if (( UFW_TEMP_EXPIRES <= now )); then
+                        label="[TEMP EXPIRED - cleanup pending: ${expires}]"
+                    else
+                        label="[TEMP until ${expires}]"
+                    fi
+                else
+                    label="[TEMP - state missing]"
+                fi
+            fi
+            printf '%s  %s\n' "${line}" "${label}"
+        else
+            printf '%s\n' "${line}"
+        fi
+    done < <(ufw show added 2>/dev/null || true)
+}
+
 show_all_ufw_rules() {
     banner
     section "UFW FIREWALL RULES"
@@ -2768,6 +3012,8 @@ show_all_ufw_rules() {
         pause
         return
     fi
+
+    reconcile_ufw_temp_rules >/dev/null 2>&1 || true
 
     echo "Firewall status and default policies:"
     echo
@@ -2780,16 +3026,296 @@ show_all_ufw_rules() {
 
     echo
     section "NUMBERED RULES"
-    ufw status numbered || true
+    if ufw_active; then
+        print_annotated_ufw_rules
+    else
+        info "UFW is inactive, so UFW does not provide numbered live rules."
+    fi
 
     if ! ufw_active; then
         echo
         section "CONFIGURED RULES (UFW INACTIVE)"
         info "UFW is inactive. These stored rules would apply after enabling it."
         echo
-        ufw show added || true
+        print_annotated_ufw_added_rules
     fi
 
+    pause
+}
+
+prompt_ufw_rule_details() {
+    local protocol port source description normalized
+
+    banner
+    section "FIREWALL RULE DETAILS"
+    cat <<'EOF'
+Create one incoming ALLOW rule.
+
+Protocol:
+  TCP  connection-oriented services such as SSH, HTTP, HTTPS, MQTT or FRP
+  UDP  datagram services such as WireGuard, DNS or many game/voice services
+
+HTTP and HTTPS are application protocols. For a normal web server choose TCP
+with destination port 80 (HTTP) or 443 (HTTPS). Do not enter "http://",
+"https://", a URL, hostname, path or port suffix in an IP/network field.
+
+Source:
+  any                    connections from every IPv4/IPv6 source
+  198.51.100.25          one IPv4 address only
+  192.168.10.0/24        one IPv4 CIDR network
+
+The source field accepts only "any", a plain IPv4 address or an IPv4 CIDR.
+Examples of invalid input: https://example.com, server.example.com, 1.2.3.4:22
+EOF
+
+    while :; do
+        echo
+        read -r -p "Protocol [tcp]: " protocol
+        protocol="${protocol:-tcp}"
+        protocol="${protocol,,}"
+        if [[ "${protocol}" == "tcp" || "${protocol}" == "udp" ]]; then
+            break
+        fi
+        error "Protocol must be tcp or udp. Do not enter http, https or :// here."
+    done
+
+    while :; do
+        echo
+        read -r -p "Destination port (1-65535): " port
+        if valid_port "${port}"; then
+            port=$((10#${port}))
+            break
+        fi
+        error "Enter only one numeric port from 1 through 65535."
+        echo "Examples: 22 for SSH, 80 for HTTP, 443 for HTTPS, 51820 for WireGuard."
+    done
+
+    while :; do
+        echo
+        read -r -p "Allowed source [any]: " source
+        source="${source:-any}"
+        source="${source,,}"
+        if [[ "${source}" == "any" ]] || valid_ipv4 "${source}"; then
+            break
+        fi
+        if valid_cidr "${source}"; then
+            normalized="$(cidr_normalized "${source}")"
+            if [[ "${source}" != "${normalized}" ]]; then
+                info "Network normalized to ${normalized}."
+                source="${normalized}"
+            fi
+            break
+        fi
+        error "Source must be 'any', one plain IPv4 address or one IPv4 CIDR network."
+        echo "Do not include http://, https://, a hostname, path, protocol or port."
+    done
+
+    while :; do
+        echo
+        read -r -p "Rule description (1-48 characters): " description
+        if valid_ufw_rule_description "${description}"; then
+            break
+        fi
+        error "Use 1-48 letters, numbers, spaces, dots, underscores, colons or hyphens."
+    done
+
+    PROMPT_UFW_PROTOCOL="${protocol}"
+    PROMPT_UFW_PORT="${port}"
+    PROMPT_UFW_SOURCE="${source}"
+    PROMPT_UFW_DESCRIPTION="${description}"
+}
+
+prompt_ufw_temp_duration() {
+    local choice minutes
+
+    banner
+    section "TEMPORARY RULE DURATION"
+    cat <<'EOF'
+The rule is stored in UFW and marked as temporary. A persistent systemd timer
+removes it at the selected time. The timer survives a server restart.
+
+This is different from a direct iptables/nftables runtime rule, which UFW may
+not display and which can disappear during reload or reboot.
+EOF
+    echo
+    echo "  [1] 15 minutes"
+    echo "  [2] 1 hour"
+    echo "  [3] 8 hours"
+    echo "  [4] 24 hours"
+    echo "  [5] Enter minutes (1-10080 / up to 7 days)"
+    echo "  [B] Back"
+    echo
+    read -r -p "Selection: " choice
+
+    case "${choice}" in
+        1) minutes=15 ;;
+        2) minutes=60 ;;
+        3) minutes=480 ;;
+        4) minutes=1440 ;;
+        5)
+            read -r -p "Duration in minutes (1-10080): " minutes
+            if ! [[ "${minutes}" =~ ^[0-9]+$ ]] || (( minutes < 1 || minutes > 10080 )); then
+                error "Duration must be between 1 and 10080 minutes."
+                pause
+                return 1
+            fi
+            ;;
+        b|B|0) return 1 ;;
+        *) error "Invalid selection."; pause; return 1 ;;
+    esac
+
+    PROMPT_UFW_DURATION_MINUTES="${minutes}"
+}
+
+add_ufw_rule() {
+    local lifetime="$1"
+    local comment choice output created expires id expiry_text
+
+    ufw_installed || { error "UFW is not installed."; pause; return 1; }
+    prompt_ufw_rule_details || return
+
+    if [[ "${lifetime}" == "temporary" ]]; then
+        prompt_ufw_temp_duration || return
+        created="$(date +%s)"
+        expires=$(( created + PROMPT_UFW_DURATION_MINUTES * 60 ))
+        id="${created}-${RANDOM}"
+        comment="S2S Manager TEMP ${id} ${PROMPT_UFW_DESCRIPTION}"
+        expiry_text="$(format_ufw_expiry "${expires}")"
+    else
+        comment="S2S Manager PERM ${PROMPT_UFW_DESCRIPTION}"
+        expiry_text="never"
+    fi
+
+    banner
+    section "FIREWALL RULE PREVIEW"
+    printf '%-24s %s\n' "Action:" "ALLOW IN"
+    printf '%-24s %s\n' "Protocol:" "${PROMPT_UFW_PROTOCOL^^}"
+    printf '%-24s %s\n' "Destination port:" "${PROMPT_UFW_PORT}"
+    printf '%-24s %s\n' "Allowed source:" "${PROMPT_UFW_SOURCE}"
+    printf '%-24s %s\n' "Description:" "${PROMPT_UFW_DESCRIPTION}"
+    printf '%-24s %s\n' "Lifetime:" "${lifetime^^}"
+    [[ "${lifetime}" == "temporary" ]] && printf '%-24s %s\n' "Expires:" "${expiry_text}"
+    echo
+    warn "An ALLOW rule opens the selected port to the displayed source."
+    [[ "${PROMPT_UFW_SOURCE}" == "any" ]] && warn "Source 'any' allows connections from the Internet when externally reachable."
+    echo
+    read -r -p "Create this firewall rule? [y/N]: " choice
+    [[ "${choice,,}" == "y" ]] || { info "No rule was created."; pause; return 0; }
+
+    if ufw_allow_rule_spec_exists "${PROMPT_UFW_PORT}" "${PROMPT_UFW_PROTOCOL}" "${PROMPT_UFW_SOURCE}"; then
+        error "An equivalent ALLOW rule already exists."
+        echo "The manager will not change its comment or lifetime classification."
+        echo "Delete or review the existing rule before creating a replacement."
+        pause
+        return 1
+    fi
+
+    build_ufw_rule_args "${PROMPT_UFW_PORT}" "${PROMPT_UFW_PROTOCOL}" "${PROMPT_UFW_SOURCE}"
+    if ! output="$(ufw "${UFW_RULE_ARGS[@]}" comment "${comment}" 2>&1)"; then
+        error "UFW could not create the rule."
+        [[ -n "${output}" ]] && printf '%s\n' "${output}"
+        pause
+        return 1
+    fi
+
+    if [[ "${lifetime}" == "temporary" ]]; then
+        save_ufw_temp_rule "${id}" "${PROMPT_UFW_PORT}" "${PROMPT_UFW_PROTOCOL}" \
+            "${PROMPT_UFW_SOURCE}" "${PROMPT_UFW_DESCRIPTION}" "${comment}" "${created}" "${expires}"
+        if ! schedule_ufw_temp_rule "${id}" "${PROMPT_UFW_PORT}" "${PROMPT_UFW_PROTOCOL}" \
+            "${PROMPT_UFW_SOURCE}" "${PROMPT_UFW_DESCRIPTION}" "${comment}" "${expires}"; then
+            error "The expiry timer could not be created. Rolling back the UFW rule."
+            ufw --force delete "${UFW_RULE_ARGS[@]}" comment "${comment}" >/dev/null 2>&1 || true
+            remove_ufw_temp_timer_files "${id}"
+            pause
+            return 1
+        fi
+        ok "Temporary UFW rule created."
+        ok "Automatic removal scheduled for ${expiry_text}."
+    else
+        ok "Permanent UFW rule created."
+    fi
+    pause
+}
+
+delete_ufw_rule() {
+    local choice rules number selected ssh_port id confirm
+
+    banner
+    section "DELETE UFW RULE"
+    if ! ufw_installed; then
+        info "UFW is not installed."
+        pause
+        return
+    fi
+    if ! ufw_active; then
+        warn "UFW is inactive and does not expose numbered live rules."
+        info "Deletion by number is therefore unavailable in this first implementation."
+        echo "Stored rules remain visible through 'Show all firewall rules'."
+        pause
+        return
+    fi
+
+    print_annotated_ufw_rules
+    echo
+    echo "Enter the number shown in square brackets. Enter B to go back."
+    read -r -p "Rule number: " choice
+    [[ "${choice}" =~ ^[0-9]+$ ]] || { [[ "${choice}" =~ ^[Bb]$ ]] && return; error "Enter a numeric rule number."; pause; return 1; }
+    number=$((10#${choice}))
+    rules="$(ufw status numbered 2>/dev/null || true)"
+    selected="$(awk -v wanted="${number}" '
+        /^\[[[:space:]]*[0-9]+\]/ {
+            n=$0
+            sub(/^\[[[:space:]]*/, "", n)
+            sub(/\].*$/, "", n)
+            if ((n+0) == wanted) { print; exit }
+        }
+    ' <<< "${rules}")"
+    if [[ -z "${selected}" ]]; then
+        error "Rule number ${number} does not exist."
+        pause
+        return 1
+    fi
+
+    banner
+    section "DELETE RULE PREVIEW"
+    printf '%s\n' "${selected}"
+    echo
+
+    ssh_port="$(detect_ssh_port)"
+    if grep -Eq "(^|[[:space:]])${ssh_port}/tcp([[:space:]]|$)" <<< "${selected}" || \
+       grep -Fq "S2S Manager SSH safety" <<< "${selected}" || \
+       grep -Eiq 'OpenSSH|#[[:space:]].*SSH' <<< "${selected}"; then
+        error "This rule protects the detected SSH administration port TCP ${ssh_port}."
+        error "The manager refuses to delete it because the current remote session could be locked out."
+        pause
+        return 1
+    fi
+
+    if grep -Eq 'S2S Manager (WireGuard|IKE|NAT-T)|500/udp|4500/udp|/esp' <<< "${selected}"; then
+        warn "This appears to be a VPN/IPsec rule. Deleting it may disconnect a tunnel or client."
+    else
+        warn "Deleting an allow rule can immediately make the service unreachable."
+    fi
+    echo
+    read -r -p "Type DELETE to remove this rule: " confirm
+    [[ "${confirm}" == "DELETE" ]] || { info "Rule was not deleted."; pause; return 0; }
+
+    if [[ "${selected}" =~ S2S[[:space:]]Manager[[:space:]]TEMP[[:space:]]([A-Za-z0-9_-]+) ]]; then
+        id="${BASH_REMATCH[1]}"
+        if load_ufw_temp_rule "${id}"; then
+            build_ufw_rule_args "${UFW_TEMP_PORT}" "${UFW_TEMP_PROTO}" "${UFW_TEMP_SOURCE}"
+            if ! ufw --force delete "${UFW_RULE_ARGS[@]}" comment "${UFW_TEMP_COMMENT}" >/dev/null 2>&1; then
+                ufw --force delete "${number}" >/dev/null || { error "UFW could not delete the rule."; pause; return 1; }
+            fi
+            remove_ufw_temp_timer_files "${id}"
+        else
+            ufw --force delete "${number}" >/dev/null || { error "UFW could not delete the rule."; pause; return 1; }
+        fi
+    else
+        ufw --force delete "${number}" >/dev/null || { error "UFW could not delete the rule."; pause; return 1; }
+    fi
+
+    ok "UFW rule deleted."
     pause
 }
 
@@ -2911,6 +3437,9 @@ ufw_management_menu() {
         printf 'Status: %s\n' "${status}"
         echo
         echo "  [1] Show all firewall rules"
+        echo "  [2] Add permanent ALLOW rule"
+        echo "  [3] Add temporary ALLOW rule with expiry timer"
+        echo "  [4] Delete firewall rule"
         echo "  [B] Back"
         echo "  [E] Exit"
         echo
@@ -2918,6 +3447,9 @@ ufw_management_menu() {
 
         case "${choice}" in
             1) show_all_ufw_rules ;;
+            2) add_ufw_rule permanent ;;
+            3) add_ufw_rule temporary ;;
+            4) delete_ufw_rule ;;
             b|B|0) return ;;
             e|E) clear_screen; echo "Bye."; exit 0 ;;
             *) error "Invalid selection."; sleep 1 ;;
