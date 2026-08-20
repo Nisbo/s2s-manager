@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.7**.
+This manual describes **IPsec S2S Manager 1.3.8**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -91,6 +91,7 @@ IPsec requires UDP **500** and **4500**. WireGuard requires its configured UDP l
   [17] Create Debian peer bundle               [21] WireGuard
   [18] Transfer Debian peer bundle via SCP
   [19] Import Debian peer bundle               [22] UFW
+                                                [23] Access Check (read-only)
 ```
 
 ---
@@ -156,6 +157,9 @@ Validates the bundle and local conflicts, shows a preview, then creates the mirr
 
 ## [20] Show system status
 Shows host-level prerequisite and IPsec/VTI status.
+
+## [23] Access Check (read-only)
+Analyses a selected source-to-destination path using live interface, forwarding, route, firewall and NAT state. It never changes the system. WireGuard and UFW retain their dedicated menus at **[21]** and **[22]**.
 
 ---
 
@@ -454,7 +458,19 @@ Deleting a temporary rule also disables and removes its expiry timer. When UFW i
 
 ---
 
-# 10. Backup and restore
+# 10. Read-only access check
+
+Choose **[23] Access Check** to analyse whether a source has the required server-side path toward a destination. Sources can be a manager-known WireGuard client, the IPv4 address of the current SSH client, or a custom ingress interface plus IPv4/CIDR. Destinations can be the complete IPv4 Internet, one IPv4 host or one IPv4 CIDR network.
+
+The check reads interface state, WireGuard peer and client-export information, `net.ipv4.ip_forward`, the kernel route decision, simple iptables forwarding evidence, UFW's routed default policy and—when checking Internet access—an exact MASQUERADE rule. UFW is optional: if it is absent, that fact is reported without treating it as a failure.
+
+Results distinguish confirmed checks, warnings/unknowns and blocking failures. A warning means the manager cannot prove the decision from the available formatted rules; it does not automatically mean traffic is blocked. The check never adds or removes a firewall rule, route, interface, timer or sysctl setting. It is not an end-to-end packet test from the remote client.
+
+The current SSH client IP comes from `SSH_CONNECTION`. This is the address visible to the server and may be a public NAT address. The server cannot reliably discover the remote computer's private LAN CIDR from an SSH session.
+
+---
+
+# 11. Backup and restore
 
 IPsec tunnel backups are available through **[16]**. WireGuard migration backups are stored separately under:
 
@@ -466,7 +482,7 @@ Backups and exports can contain PSKs/private keys. Protect them accordingly.
 
 ---
 
-# 11. Troubleshooting
+# 12. Troubleshooting
 
 ## IPsec tunnel is DEFINED but not connected
 A definition is not installed. Use **[7] Install tunnel on Debian**.
@@ -503,7 +519,7 @@ The manager creates a backup immediately before migration and automatically atte
 
 ---
 
-# 12. Security notes
+# 13. Security notes
 
 - Never publish PSKs, WireGuard private keys, client exports or QR codes.
 - WireGuard **public keys** are not secret; private keys and PSKs are.

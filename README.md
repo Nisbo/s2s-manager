@@ -68,6 +68,14 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - Reject duplicate rules so an existing permanent rule cannot accidentally become temporary
 - Keep provider/cloud firewall management explicitly separate
 
+### Read-only access check
+
+- Dedicated **[23] Access Check** main-menu entry
+- Select a managed WireGuard client, the current SSH client IP, or a custom ingress interface/source network
+- Check access toward the IPv4 Internet, one IPv4 host, or one IPv4 CIDR network
+- Inspect interface state, WireGuard peer/client AllowedIPs, IPv4 forwarding, kernel route selection, UFW routed policy, iptables forwarding and Internet NAT
+- Report confirmed checks, warnings/unknowns and definite blockers without changing the system
+
 ## Requirements
 
 - Debian **13**
@@ -116,7 +124,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.7                          ║
+║                       Version 1.3.8                          ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────
@@ -147,6 +155,7 @@ Important managed paths include:
   [17] Create Debian peer bundle               [21] WireGuard
   [18] Transfer Debian peer bundle via SCP
   [19] Import Debian peer bundle               [22] UFW
+                                                [23] Access Check (read-only)
 
   [E] Exit
 ```
@@ -188,6 +197,8 @@ If UFW is missing, the manager can install it and prepare an allow rule for the 
 Permanent and temporary incoming ALLOW rules can be added for TCP or UDP. The guided form presents protocol, destination port, allowed source and description as four separate steps, with the relevant explanation immediately before each input. Use `B` in any step to cancel the wizard and return to UFW management, or `E` to exit the program. The source may be `any`, one plain IPv4 address or one IPv4 CIDR network. URL syntax such as `https://`, hostnames and values containing `:port` are not accepted in the source field.
 
 Temporary rules use an on-disk systemd timer and are highlighted in yellow with their expiry time. Permanent rules keep the normal UFW display without an additional label. The internal timer identifier is hidden from the user-facing rule list; only the entered description and `[TEMP until …]` are shown for temporary rules. The timer survives a reboot and removes the matching UFW rule at expiry. Rules can be deleted by number while UFW is active. The manager refuses to delete the detected current SSH rule and shows an additional warning for WireGuard, IKE, NAT-T and ESP rules.
+
+Choose **[23] Access Check** for a read-only server-side path analysis. It accepts a managed WireGuard client, the current SSH client IPv4 address, or a custom ingress interface/source IPv4 network, followed by an Internet, host or CIDR destination. The result checks the available forwarding, routing, firewall and NAT evidence without adding rules or sending traffic as the remote client. Warnings are explicitly not presented as proof of failure, and the manager explains that only a real test from the remote device can prove end-to-end access.
 
 ## Safety model
 

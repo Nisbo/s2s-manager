@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.7
+# Version 1.3.8
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.7"
+VERSION="1.3.8"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -10015,6 +10015,337 @@ setup_required_menu() {
     done
 }
 
+# ==============================================================================
+# Read-only access path check
+# ==============================================================================
+
+ACCESS_CHECK_OK=0
+ACCESS_CHECK_WARN=0
+ACCESS_CHECK_FAIL=0
+
+access_check_ok() {
+    ACCESS_CHECK_OK=$((ACCESS_CHECK_OK + 1))
+    ok "$*"
+}
+
+access_check_warn() {
+    ACCESS_CHECK_WARN=$((ACCESS_CHECK_WARN + 1))
+    warn "$*"
+}
+
+access_check_fail() {
+    ACCESS_CHECK_FAIL=$((ACCESS_CHECK_FAIL + 1))
+    error "$*"
+}
+
+access_check_first_ip() {
+    local value="$1" network prefix candidate
+    if valid_ipv4 "${value}"; then
+        printf '%s' "${value}"
+        return 0
+    fi
+    valid_cidr "${value}" || return 1
+    network="$(cidr_network_int "${value}")"
+    prefix="${value##*/}"
+    candidate="${network}"
+    (( prefix < 31 )) && candidate=$((network + 1))
+    int_to_ipv4 "${candidate}"
+}
+
+access_check_select_wireguard_client() {
+    local -a ids=()
+    local id choice i=0
+
+    while read -r id; do
+        [[ -n "${id}" ]] && ids+=("${id}")
+    done < <(list_wireguard_client_ids)
+    (( ${#ids[@]} > 0 )) || { error "No WireGuard clients are configured in the manager."; return 1; }
+
+    echo
+    echo "Configured WireGuard clients:"
+    for id in "${ids[@]}"; do
+        load_wireguard_client "${id}" || continue
+        i=$((i + 1))
+        printf '  [%d] %-24s %s\n' "${i}" "${WG_CLIENT_NAME}" "${WG_CLIENT_IP}"
+    done
+    echo "  [B] Back"
+    echo "  [E] Exit"
+    echo
+    read -r -p "Client: " choice
+    case "${choice}" in
+        b|B|0|"") return 1 ;;
+        e|E) clear_screen; echo "Bye."; exit 0 ;;
+    esac
+    [[ "${choice}" =~ ^[0-9]+$ ]] || { error "Enter a listed client number."; return 1; }
+    (( choice >= 1 && choice <= ${#ids[@]} )) || { error "Client number does not exist."; return 1; }
+    load_wireguard_client "${ids[$((choice-1))]}" || return 1
+    ACCESS_SOURCE_LABEL="WireGuard client ${WG_CLIENT_NAME}"
+    ACCESS_SOURCE_VALUE="${WG_CLIENT_IP}/32"
+    ACCESS_SOURCE_IP="${WG_CLIENT_IP}"
+    ACCESS_INGRESS_IF="${WG_INTERFACE:-wg0}"
+    ACCESS_WG_CLIENT_ID="${ids[$((choice-1))]}"
+}
+
+access_check_collect_source() {
+    local choice value route
+    ACCESS_WG_CLIENT_ID=""
+
+    banner
+    section "ACCESS CHECK - SOURCE"
+    cat <<'EOF'
+Select where the connection would originate. This check does not send traffic
+as that remote device and does not modify firewall or routing configuration.
+
+  [1] Configured WireGuard client
+  [2] Current SSH client IP
+  [3] Custom ingress interface and source IPv4/CIDR
+  [B] Back
+  [E] Exit
+EOF
+    echo
+    read -r -p "Source: " choice
+    case "${choice}" in
+        1)
+            wireguard_server_known || { error "No WireGuard server is known to the manager."; pause; return 1; }
+            load_wireguard_server || { error "WireGuard server state could not be loaded."; pause; return 1; }
+            access_check_select_wireguard_client || { pause; return 1; }
+            ;;
+        2)
+            value="$(awk '{print $1}' <<< "${SSH_CONNECTION:-}")"
+            if ! valid_ipv4 "${value}"; then
+                error "No IPv4 SSH client address is available in SSH_CONNECTION."
+                pause
+                return 1
+            fi
+            route="$(ip -4 route get "${value}" 2>/dev/null || true)"
+            ACCESS_INGRESS_IF="$(awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' <<< "${route}")"
+            [[ -n "${ACCESS_INGRESS_IF}" ]] || { error "Could not determine the SSH ingress interface."; pause; return 1; }
+            ACCESS_SOURCE_LABEL="current SSH client"
+            ACCESS_SOURCE_VALUE="${value}/32"
+            ACCESS_SOURCE_IP="${value}"
+            ;;
+        3)
+            echo
+            echo "Enter the Linux interface on which this traffic arrives."
+            echo "Examples: wg0, eth0, ens18 or vti-office. Enter only the interface name."
+            read -r -p "Ingress interface: " ACCESS_INGRESS_IF
+            [[ "${ACCESS_INGRESS_IF}" =~ ^[A-Za-z0-9_.:-]{1,15}$ ]] || { error "Invalid interface name."; pause; return 1; }
+            echo
+            echo "Enter one source IPv4 address or IPv4 CIDR network."
+            echo "Examples: 10.250.0.2 or 192.168.10.0/24. Do not enter a URL or port."
+            read -r -p "Source IPv4/CIDR: " value
+            if valid_ipv4 "${value}"; then
+                ACCESS_SOURCE_VALUE="${value}/32"
+            elif valid_cidr "${value}"; then
+                ACCESS_SOURCE_VALUE="$(cidr_normalized "${value}")"
+            else
+                error "Source must be a valid IPv4 address or IPv4 CIDR."
+                pause
+                return 1
+            fi
+            ACCESS_SOURCE_IP="$(access_check_first_ip "${ACCESS_SOURCE_VALUE}")"
+            ACCESS_SOURCE_LABEL="custom source"
+            ;;
+        b|B|0|"") return 1 ;;
+        e|E) clear_screen; echo "Bye."; exit 0 ;;
+        *) error "Invalid selection."; pause; return 1 ;;
+    esac
+}
+
+access_check_collect_destination() {
+    local choice value
+    banner
+    section "ACCESS CHECK - DESTINATION"
+    cat <<'EOF'
+Select what the source should be able to reach:
+
+  [1] Entire IPv4 Internet (route probe uses 1.1.1.1)
+  [2] One destination IPv4 address
+  [3] One destination IPv4 CIDR network
+  [B] Back
+  [E] Exit
+
+This first read-only check evaluates the network path. It does not yet test a
+specific TCP/UDP port or create a temporary firewall rule.
+EOF
+    echo
+    read -r -p "Destination: " choice
+    case "${choice}" in
+        1)
+            ACCESS_DEST_LABEL="entire IPv4 Internet"
+            ACCESS_DEST_VALUE="0.0.0.0/0"
+            ACCESS_DEST_IP="1.1.1.1"
+            ACCESS_NEEDS_NAT=1
+            ;;
+        2)
+            echo
+            echo "Enter only one IPv4 address, for example 10.200.200.10."
+            read -r -p "Destination IPv4: " value
+            valid_ipv4 "${value}" || { error "Invalid destination IPv4 address."; pause; return 1; }
+            ACCESS_DEST_LABEL="destination host"
+            ACCESS_DEST_VALUE="${value}/32"
+            ACCESS_DEST_IP="${value}"
+            ACCESS_NEEDS_NAT=0
+            ;;
+        3)
+            echo
+            echo "Enter one IPv4 CIDR, for example 10.200.200.0/24."
+            echo "The route probe uses the first usable address in that network."
+            read -r -p "Destination IPv4 CIDR: " value
+            valid_cidr "${value}" || { error "Invalid destination IPv4 CIDR."; pause; return 1; }
+            ACCESS_DEST_VALUE="$(cidr_normalized "${value}")"
+            ACCESS_DEST_IP="$(access_check_first_ip "${ACCESS_DEST_VALUE}")"
+            ACCESS_DEST_LABEL="destination network"
+            ACCESS_NEEDS_NAT=0
+            ;;
+        b|B|0|"") return 1 ;;
+        e|E) clear_screen; echo "Bye."; exit 0 ;;
+        *) error "Invalid selection."; pause; return 1 ;;
+    esac
+}
+
+access_check_run() {
+    local route simulated=1 egress="" forwarding="" ufw_status="" default_routed=""
+    local wg_dump="" peer="" export_file="" nat_source="${ACCESS_SOURCE_VALUE}"
+
+    ACCESS_CHECK_OK=0
+    ACCESS_CHECK_WARN=0
+    ACCESS_CHECK_FAIL=0
+    banner
+    section "READ-ONLY ACCESS CHECK"
+    printf '%-24s %s (%s)\n' "Source:" "${ACCESS_SOURCE_LABEL}" "${ACCESS_SOURCE_VALUE}"
+    printf '%-24s %s\n' "Ingress interface:" "${ACCESS_INGRESS_IF}"
+    printf '%-24s %s (%s)\n' "Destination:" "${ACCESS_DEST_LABEL}" "${ACCESS_DEST_VALUE}"
+    printf '%-24s %s\n' "Route probe address:" "${ACCESS_DEST_IP}"
+    echo
+
+    section "INTERFACE AND SOURCE"
+    if ip link show "${ACCESS_INGRESS_IF}" >/dev/null 2>&1; then
+        access_check_ok "Ingress interface ${ACCESS_INGRESS_IF} exists."
+        if ip link show "${ACCESS_INGRESS_IF}" 2>/dev/null | head -1 | grep -q 'state UP'; then
+            access_check_ok "Ingress interface ${ACCESS_INGRESS_IF} is UP."
+        else
+            access_check_warn "Interface ${ACCESS_INGRESS_IF} does not report state UP (virtual interfaces may report UNKNOWN)."
+        fi
+    else
+        access_check_fail "Ingress interface ${ACCESS_INGRESS_IF} does not exist."
+    fi
+
+    if [[ -n "${ACCESS_WG_CLIENT_ID}" ]]; then
+        if command_available wg && wg show "${ACCESS_INGRESS_IF}" >/dev/null 2>&1; then
+            access_check_ok "WireGuard interface ${ACCESS_INGRESS_IF} is active."
+            wg_dump="$(wg show "${ACCESS_INGRESS_IF}" dump 2>/dev/null || true)"
+            peer="$(awk -F'\t' -v p="${WG_CLIENT_PUBLIC_KEY}" '$1==p{print; exit}' <<< "${wg_dump}")"
+            if [[ -n "${peer}" ]]; then
+                access_check_ok "WireGuard peer for ${WG_CLIENT_NAME} is loaded."
+            else
+                access_check_fail "WireGuard peer for ${WG_CLIENT_NAME} is not loaded on ${ACCESS_INGRESS_IF}."
+            fi
+        else
+            access_check_fail "WireGuard interface ${ACCESS_INGRESS_IF} is not active."
+        fi
+        export_file="$(wireguard_client_export_file "${ACCESS_WG_CLIENT_ID}")"
+        if [[ -f "${export_file}" ]] && grep -Eq '^AllowedIPs[[:space:]]*=[[:space:]]*0\.0\.0\.0/0([[:space:]]|$)' "${export_file}"; then
+            access_check_ok "Client export is full-tunnel (AllowedIPs includes all IPv4 destinations)."
+        elif [[ -f "${export_file}" ]]; then
+            access_check_warn "Client export is not full-tunnel; verify that ${ACCESS_DEST_VALUE} is included in AllowedIPs."
+        else
+            access_check_warn "No client export is available; client-side AllowedIPs cannot be verified."
+        fi
+        [[ -n "${WG_NETWORK:-}" ]] && nat_source="${WG_NETWORK}"
+    fi
+
+    section "FORWARDING AND ROUTE"
+    forwarding="$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo unknown)"
+    if [[ "${forwarding}" == "1" ]]; then
+        access_check_ok "IPv4 forwarding is enabled."
+    elif [[ "${forwarding}" == "0" ]]; then
+        access_check_fail "IPv4 forwarding is disabled. Forwarded client traffic cannot pass."
+    else
+        access_check_warn "IPv4 forwarding state could not be read."
+    fi
+
+    route="$(ip -4 route get "${ACCESS_DEST_IP}" from "${ACCESS_SOURCE_IP}" iif "${ACCESS_INGRESS_IF}" 2>/dev/null || true)"
+    if [[ -z "${route}" ]]; then
+        simulated=0
+        route="$(ip -4 route get "${ACCESS_DEST_IP}" 2>/dev/null || true)"
+    fi
+    if [[ -z "${route}" ]] || grep -Eq '(^|[[:space:]])(unreachable|prohibit|blackhole)([[:space:]]|$)' <<< "${route}"; then
+        access_check_fail "No usable IPv4 route to ${ACCESS_DEST_IP} was found."
+    else
+        egress="$(awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' <<< "${route}")"
+        access_check_ok "Route to ${ACCESS_DEST_IP} exists${egress:+ via ${egress}}."
+        printf '    %s\n' "${route}"
+        (( simulated == 1 )) || access_check_warn "Kernel rejected the forwarded-packet simulation; displayed route is a local fallback lookup."
+    fi
+
+    section "FORWARD FIREWALL"
+    if command_available iptables; then
+        if iptables -C FORWARD -i "${ACCESS_INGRESS_IF}" -j ACCEPT >/dev/null 2>&1; then
+            access_check_ok "iptables contains an ingress FORWARD allow rule for ${ACCESS_INGRESS_IF}."
+        else
+            access_check_warn "No simple iptables 'FORWARD -i ${ACCESS_INGRESS_IF} -j ACCEPT' rule was found."
+            info "A more specific nftables/iptables rule may still permit this path."
+        fi
+    else
+        access_check_warn "iptables is unavailable; low-level FORWARD rules were not checked."
+    fi
+
+    if ufw_installed; then
+        if ufw_active; then
+            ufw_status="$(ufw status verbose 2>/dev/null || true)"
+            default_routed="$(grep -E '^Default:' <<< "${ufw_status}" | head -1)"
+            if grep -Eiq 'allow[[:space:]]*\(routed\)' <<< "${default_routed}"; then
+                access_check_ok "UFW default routed policy is ALLOW."
+            elif grep -Eiq 'deny[[:space:]]*\(routed\)' <<< "${default_routed}"; then
+                access_check_warn "UFW default routed policy is DENY; a matching UFW route rule is required."
+                info "This version does not claim a match from UFW's formatted table because overlapping CIDRs and rule order need exact evaluation."
+            else
+                access_check_warn "UFW routed default policy could not be determined."
+            fi
+        else
+            access_check_ok "UFW is installed but inactive, so it does not currently block this path."
+        fi
+    else
+        info "UFW is not installed; no UFW decision applies. Provider and low-level firewalls remain separate."
+    fi
+
+    if (( ACCESS_NEEDS_NAT == 1 )); then
+        section "INTERNET NAT"
+        if [[ -z "${egress}" ]]; then
+            access_check_fail "Internet egress interface is unknown, so NAT cannot be verified."
+        elif command_available iptables && iptables -t nat -C POSTROUTING -s "${nat_source}" -o "${egress}" -j MASQUERADE >/dev/null 2>&1; then
+            access_check_ok "MASQUERADE exists for ${nat_source} via ${egress}."
+        else
+            access_check_warn "No exact MASQUERADE rule for ${nat_source} via ${egress} was found."
+            info "A broader nftables/iptables NAT rule may still cover this source."
+        fi
+    fi
+
+    section "RESULT"
+    printf '%-18s %d\n' "Confirmed checks:" "${ACCESS_CHECK_OK}"
+    printf '%-18s %d\n' "Warnings/unknown:" "${ACCESS_CHECK_WARN}"
+    printf '%-18s %d\n' "Blocking failures:" "${ACCESS_CHECK_FAIL}"
+    echo
+    if (( ACCESS_CHECK_FAIL > 0 )); then
+        error "At least one blocking configuration problem was detected."
+    elif (( ACCESS_CHECK_WARN > 0 )); then
+        warn "No definite blocker was found, but the path is not fully proven."
+    else
+        ok "All checks available to the manager passed."
+    fi
+    echo
+    info "This is a read-only server-side configuration check, not an end-to-end test from the remote client."
+    info "No firewall rule, route, interface or system setting was changed."
+    pause
+}
+
+access_check_menu() {
+    access_check_collect_source || return
+    access_check_collect_destination || return
+    access_check_run
+}
+
 main_menu() {
     while :; do
         banner
@@ -10066,6 +10397,7 @@ main_menu() {
             "  [20] Show system status"
             "  [21] WireGuard"
             "  [22] UFW"
+            "  [23] Access Check (read-only)"
         )
 
         render_menu_pair \
@@ -10110,6 +10442,7 @@ main_menu() {
             20) show_system_status ;;
             21) wireguard_menu ;;
             22) ufw_management_menu ;;
+            23) access_check_menu ;;
             [eE]|0) clear_screen; echo "Bye."; exit 0 ;;
             *) error "Invalid selection."; sleep 1 ;;
         esac
