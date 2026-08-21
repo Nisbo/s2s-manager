@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.14
+# Version 1.3.15
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.14"
+VERSION="1.3.15"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -458,7 +458,8 @@ preflight_ready() {
 }
 
 show_preflight() {
-    banner
+    local display_mode="${1:-standalone}"
+    [[ "${display_mode}" == "embedded" ]] || banner
     section "SYSTEM PRE-FLIGHT CHECK"
 
     local ready=1
@@ -8931,9 +8932,7 @@ show_system_status() {
     show_server_hardware_status
 
     echo
-    section "SYSTEM / PREREQUISITES"
-
-    show_preflight || true
+    show_preflight embedded || true
 
     echo
     section "MANAGED TUNNELS"

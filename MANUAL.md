@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.14**.
+This manual describes **IPsec S2S Manager 1.3.15**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
