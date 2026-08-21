@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.15**.
+This manual describes **IPsec S2S Manager 1.3.16**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -314,7 +314,11 @@ If the new managed configuration fails to start, the manager automatically resto
 
 ## 8.4 WireGuard server menu
 
-For a managed server the server menu can change endpoint/port/client DNS and explicitly restart/re-apply the complete WireGuard server configuration.
+For a managed server the server menu can change endpoint/port/client DNS, migrate the private VPN network, explicitly restart/re-apply the complete configuration, or remove/reset the manager-owned WireGuard server.
+
+The network migration supports IPv4 `/24` networks. It preserves the server and client keys as well as each client's host number: for example, `.5` remains `.5` in the new network. The manager updates server state, peer addresses, client exports, NAT and table 220 routing together. Existing devices must then change their local `[Interface] Address` or import the regenerated configuration/QR code. A backup is created before the change and restored automatically if the new WireGuard configuration does not start.
+
+The reset operation requires typing `RESET WIREGUARD`. It first creates a recovery backup, then stops and disables the managed interface and removes its manager configuration, live rules, route, server/client keys and exports. WireGuard packages remain installed, S2S tunnels are untouched, and removal of the managed UFW port rule is optional.
 
 A full server re-apply **does restart `wg0`**. This is appropriate for server-level settings and can reset runtime handshake/counter information until clients communicate again.
 

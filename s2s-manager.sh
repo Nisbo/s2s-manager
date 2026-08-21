@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.15
+# Version 1.3.16
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.15"
+VERSION="1.3.16"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -7270,6 +7270,17 @@ wireguard_rule_exists() {
         grep -Eq "(^|[[:space:]])$1/udp([[:space:]]|$)"
 }
 
+managed_wireguard_ufw_rule_configured() {
+    local port="$1" rules
+    ufw_installed || return 1
+    rules="$(ufw status 2>/dev/null || true)"
+    if grep -F "S2S Manager WireGuard" <<< "${rules}" | grep -Eq "(^|[[:space:]])${port}/udp([[:space:]]|$)"; then
+        return 0
+    fi
+    rules="$(ufw show added 2>/dev/null || true)"
+    grep -Fq "ufw allow ${port}/udp comment 'S2S Manager WireGuard'" <<< "${rules}"
+}
+
 remove_managed_wireguard_ufw_rules() {
     ufw_installed || return 0
     local nums n
@@ -7278,6 +7289,12 @@ remove_managed_wireguard_ufw_rules() {
     while read -r n; do
         [[ -n "${n}" ]] && ufw --force delete "${n}" >/dev/null 2>&1 || true
     done <<< "${nums}"
+
+    # Inactive UFW has no numbered live list, but its stored manager rule still
+    # needs to be removable during a complete WireGuard reset.
+    while ufw show added 2>/dev/null | grep -Fq "ufw allow ${WG_PORT:-${WG_PORT_DEFAULT}}/udp comment 'S2S Manager WireGuard'"; do
+        ufw --force delete allow "${WG_PORT:-${WG_PORT_DEFAULT}}/udp" >/dev/null 2>&1 || break
+    done
 }
 
 ensure_wireguard_firewall_rule() {
@@ -7561,6 +7578,194 @@ wireguard_apply() {
     fi
     wireguard_ensure_table220_route || return 1
     systemctl is-active --quiet "wg-quick@${WG_INTERFACE}"
+}
+
+wireguard_create_manager_backup() {
+    local reason="${1:-manual}" dir
+    dir="$(mktemp -d "${WG_BACKUP_DIR}/${WG_INTERFACE}-$(date +%Y%m%d-%H%M%S)-${reason}.XXXXXX")" || return 1
+    mkdir -p "${dir}/clients" "${dir}/exports" || return 1
+    chmod 700 "${dir}" "${dir}/clients" "${dir}/exports"
+    [[ ! -f "${WG_SERVER_STATE}" ]] || cp -a -- "${WG_SERVER_STATE}" "${dir}/server.conf" || return 1
+    [[ ! -f "${WG_SERVER_KEY}" ]] || cp -a -- "${WG_SERVER_KEY}" "${dir}/server.key" || return 1
+    [[ ! -f "${WG_CONFIG}" ]] || cp -a -- "${WG_CONFIG}" "${dir}/$(basename "${WG_CONFIG}")" || return 1
+    [[ ! -f "${WG_SYSCTL_FILE}" ]] || cp -a -- "${WG_SYSCTL_FILE}" "${dir}/$(basename "${WG_SYSCTL_FILE}")" || return 1
+    if [[ -d "${WG_CLIENT_DIR}" ]]; then cp -a -- "${WG_CLIENT_DIR}/." "${dir}/clients/" || return 1; fi
+    if [[ -d "${WG_CLIENT_EXPORT_DIR}" ]]; then cp -a -- "${WG_CLIENT_EXPORT_DIR}/." "${dir}/exports/" || return 1; fi
+    systemctl status "wg-quick@${WG_INTERFACE}" --no-pager -l > "${dir}/service-status.txt" 2>&1 || true
+    wg show "${WG_INTERFACE}" > "${dir}/wg-show.txt" 2>&1 || true
+    ip route show table 220 > "${dir}/table-220.txt" 2>&1 || true
+    WG_LAST_MANAGER_BACKUP="${dir}"
+}
+
+wireguard_restore_manager_backup() {
+    local dir="$1" config_name
+    [[ -d "${dir}" && -f "${dir}/server.conf" && -f "${dir}/server.key" ]] || return 1
+    config_name="$(basename "${WG_CONFIG}")"
+    install -m 600 "${dir}/server.conf" "${WG_SERVER_STATE}" || return 1
+    install -m 600 "${dir}/server.key" "${WG_SERVER_KEY}" || return 1
+    [[ -f "${dir}/${config_name}" ]] && install -m 600 "${dir}/${config_name}" "${WG_CONFIG}"
+    if [[ -f "${dir}/$(basename "${WG_SYSCTL_FILE}")" ]]; then
+        install -m 644 "${dir}/$(basename "${WG_SYSCTL_FILE}")" "${WG_SYSCTL_FILE}"
+    fi
+    rm -f -- "${WG_CLIENT_DIR}"/*.client "${WG_CLIENT_EXPORT_DIR}"/*.conf 2>/dev/null || true
+    cp -a -- "${dir}/clients/." "${WG_CLIENT_DIR}/" || return 1
+    cp -a -- "${dir}/exports/." "${WG_CLIENT_EXPORT_DIR}/" || return 1
+}
+
+wireguard_set_client_ip() {
+    local id="$1" new_ip="$2" file
+    valid_ipv4 "${new_ip}" || return 1
+    file="$(wireguard_client_state_file "${id}")"
+    [[ -f "${file}" ]] || return 1
+    sed -i -E "s|^WG_CLIENT_IP=.*$|WG_CLIENT_IP=${new_ip}|" "${file}" || return 1
+    load_wireguard_client "${id}" || return 1
+    [[ "${WG_CLIENT_IP}" == "${new_ip}" ]]
+}
+
+wireguard_mapped_client_ip() {
+    local old_network="$1" new_network="$2" old_ip="$3"
+    local old_base new_base old_base_int new_base_int host
+    old_base="${old_network%%/*}"; new_base="${new_network%%/*}"
+    old_base_int="$(ipv4_to_int "${old_base}")" || return 1
+    new_base_int="$(ipv4_to_int "${new_base}")" || return 1
+    host=$(( $(ipv4_to_int "${old_ip}") - old_base_int ))
+    (( host >= 2 && host <= 254 )) || return 1
+    int_to_ipv4 "$((new_base_int + host))"
+}
+
+wireguard_change_vpn_network() {
+    wireguard_server_managed || { warn "Only a manager-owned WireGuard server can be changed."; pause; return; }
+    load_wireguard_server || return
+    banner
+    section "CHANGE WIREGUARD VPN NETWORK"
+    cat <<EOF
+Changes the private IPv4 /24 network used by the WireGuard server and clients.
+
+The server keeps its WireGuard key. Every client keeps its private/public key
+and preshared key. Client host numbers are preserved: for example, client .5
+in ${WG_NETWORK} becomes client .5 in the new network.
+
+Existing client devices stop connecting until their local [Interface] Address
+is changed to the displayed new address or the regenerated configuration/QR
+code is imported. Endpoint, port, DNS and full-tunnel AllowedIPs stay unchanged.
+EOF
+    echo
+    local requested normalized prefix new_base new_server new_base_int
+    local id new_ip client_count=0 backup old_network="${WG_NETWORK}" migration_ok=1
+    read -r -p "New WireGuard VPN network (IPv4 /24): " requested
+    case "${requested,,}" in b|back) return ;; e|exit) clear_screen; echo "Bye."; exit 0 ;; esac
+    valid_cidr "${requested}" || { error "Enter a valid IPv4 CIDR such as 10.60.0.0/24."; pause; return; }
+    normalized="$(cidr_normalized "${requested}")" || { error "Could not normalize the network."; pause; return; }
+    prefix="${normalized#*/}"
+    [[ "${prefix}" == "24" ]] || { error "WireGuard network migration currently supports IPv4 /24 networks."; pause; return; }
+    [[ "${requested}" == "${normalized}" ]] || { error "Enter the network base address. Use ${normalized}."; pause; return; }
+    [[ "${normalized}" != "${WG_NETWORK}" ]] || { info "The requested network is already configured."; pause; return; }
+    if check_network_conflict "${normalized}" "" "${WG_INTERFACE}"; then
+        show_network_conflict "${normalized}"; pause; return
+    fi
+
+    new_base="${normalized%%/*}"
+    new_base_int="$(ipv4_to_int "${new_base}")"
+    new_server="$(int_to_ipv4 "$((new_base_int + 1))")"
+    while read -r id; do [[ -n "${id}" ]] && ((client_count+=1)); done < <(list_wireguard_client_ids)
+
+    echo
+    section "WIREGUARD NETWORK CHANGE PREVIEW"
+    printf '%-28s %s\n' "Old VPN network:" "${WG_NETWORK}"
+    printf '%-28s %s\n' "New VPN network:" "${normalized}"
+    printf '%-28s %s/%s\n' "New server VPN IP:" "${new_server}" "${prefix}"
+    printf '%-28s %s\n' "Clients to update:" "${client_count}"
+    echo
+    while read -r id; do
+        [[ -n "${id}" ]] || continue
+        if ! load_wireguard_client "${id}"; then
+            error "Client state '${id}' cannot be loaded; migration stopped."
+            pause; return
+        fi
+        if ! new_ip="$(wireguard_mapped_client_ip "${WG_NETWORK}" "${normalized}" "${WG_CLIENT_IP}")"; then
+            error "Client '${WG_CLIENT_NAME}' has unexpected address ${WG_CLIENT_IP}; migration stopped."
+            pause; return
+        fi
+        printf '  %-24s %s -> %s\n' "${WG_CLIENT_NAME}" "${WG_CLIENT_IP}" "${new_ip}"
+    done < <(list_wireguard_client_ids)
+    echo
+    warn "WireGuard clients will be interrupted until their client Address is updated."
+    confirm_yes_no "Change the WireGuard VPN network now?" "N" || return
+
+    wireguard_create_manager_backup "network-change" || { error "Could not create the safety backup."; pause; return; }
+    backup="${WG_LAST_MANAGER_BACKUP}"
+    systemctl stop "wg-quick@${WG_INTERFACE}" >/dev/null 2>&1 || true
+    wireguard_remove_table220_route || true
+    wireguard_cleanup_legacy_rules || true
+    save_wireguard_server_state "MANAGED" "${WG_INTERFACE}" "${normalized}" "${new_server}" "${prefix}" \
+        "${WG_PORT}" "${WG_ENDPOINT}" "${WG_DNS}" "${WG_EGRESS_IF}" ""
+    while read -r id; do
+        [[ -n "${id}" ]] || continue
+        load_wireguard_client "${id}" || { migration_ok=0; break; }
+        new_ip="$(wireguard_mapped_client_ip "${old_network}" "${normalized}" "${WG_CLIENT_IP}")" || { migration_ok=0; break; }
+        if ! wireguard_set_client_ip "${id}" "${new_ip}" || ! wireguard_render_client_export "${id}"; then
+            migration_ok=0
+            break
+        fi
+    done < <(list_wireguard_client_ids)
+
+    if (( migration_ok == 1 )) && wireguard_apply; then
+        ok "WireGuard VPN network changed successfully."
+        printf '%-28s %s\n' "New VPN network:" "${normalized}"
+        printf '%-28s %s/%s\n' "New server VPN IP:" "${new_server}" "${prefix}"
+        printf '%-28s %s\n' "Safety backup:" "${backup}"
+        (( client_count > 0 )) && warn "Update/import each client configuration before testing that client."
+    else
+        error "The new WireGuard state could not be applied completely. Restoring ${old_network}..."
+        systemctl stop "wg-quick@${WG_INTERFACE}" >/dev/null 2>&1 || true
+        wireguard_cleanup_legacy_rules || true
+        wireguard_restore_manager_backup "${backup}" && wireguard_apply \
+            && ok "Rollback successful; the previous WireGuard network is active." \
+            || error "Automatic rollback failed. Backup: ${backup}"
+    fi
+    pause
+}
+
+wireguard_remove_managed_server() {
+    wireguard_server_managed || { warn "Only a manager-owned WireGuard server can be removed here."; pause; return; }
+    load_wireguard_server || return
+    banner
+    section "REMOVE / RESET WIREGUARD SERVER"
+    cat <<EOF
+This completely removes the manager-owned WireGuard server configuration.
+
+It stops and disables wg-quick@${WG_INTERFACE}, removes its live routing/NAT
+rules, table 220 route, server key, client keys/state and generated exports.
+WireGuard packages remain installed. S2S/IPsec tunnels are not changed.
+
+A safety backup is created first so the configuration can be recovered
+manually. Existing client devices will no longer connect after this reset.
+EOF
+    echo
+    wireguard_server_summary
+    echo
+    warn "This removes private key material from the active manager state."
+    local typed backup remove_ufw="n"
+    read -r -p "Type RESET WIREGUARD to continue: " typed
+    [[ "${typed}" == "RESET WIREGUARD" ]] || { info "Reset cancelled."; pause; return; }
+    if managed_wireguard_ufw_rule_configured "${WG_PORT}"; then
+        confirm_yes_no "Also remove the managed UFW WireGuard rule for UDP ${WG_PORT}?" "N" && remove_ufw="y"
+    fi
+    wireguard_create_manager_backup "reset" || { error "Could not create the safety backup. Reset cancelled."; pause; return; }
+    backup="${WG_LAST_MANAGER_BACKUP}"
+    systemctl stop "wg-quick@${WG_INTERFACE}" >/dev/null 2>&1 || true
+    systemctl disable "wg-quick@${WG_INTERFACE}" >/dev/null 2>&1 || true
+    wireguard_remove_table220_route || true
+    wireguard_cleanup_legacy_rules || true
+    [[ "${remove_ufw}" == "y" ]] && remove_managed_wireguard_ufw_rules
+    wireguard_config_is_manager_owned "${WG_CONFIG}" && rm -f -- "${WG_CONFIG}"
+    rm -f -- "${WG_SERVER_STATE}" "${WG_SERVER_KEY}" "${WG_SYSCTL_FILE}"
+    rm -f -- "${WG_CLIENT_DIR}"/*.client "${WG_CLIENT_EXPORT_DIR}"/*.conf 2>/dev/null || true
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    ok "Manager-owned WireGuard server removed."
+    printf '%-28s %s\n' "Recovery backup:" "${backup}"
+    info "WireGuard packages remain installed; server setup can now start from the beginning."
+    pause
 }
 
 # Update only WireGuard peer state without restarting wg0. This preserves
@@ -8313,15 +8518,21 @@ wireguard_server_menu() {
     wireguard_server_summary
     echo
     echo "  [1] Change endpoint / port / client DNS"
-    echo "  [2] Restart / re-apply WireGuard server"
+    echo "  [2] Change WireGuard VPN network"
+    echo "      Keeps all keys and client host numbers in the new /24."
+    echo "  [3] Restart / re-apply WireGuard server"
     echo "      Regenerates manager-owned wg0 configuration and routing/NAT rules."
+    echo "  [4] Remove / reset WireGuard server"
+    echo "      Creates a backup and allows a fresh setup."
     echo "  [B] Back"
     echo
     local c
     read -r -p "Selection: " c
     case "${c}" in
         1) wireguard_change_server_settings ;;
-        2) wireguard_apply && ok "WireGuard restarted." || error "Restart failed."; pause ;;
+        2) wireguard_change_vpn_network ;;
+        3) wireguard_apply && ok "WireGuard restarted." || error "Restart failed."; pause ;;
+        4) wireguard_remove_managed_server ;;
     esac
 }
 

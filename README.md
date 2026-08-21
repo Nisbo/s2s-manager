@@ -45,6 +45,9 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - Add and remove managed clients without restarting `wg0`
 - Live peer updates preserve existing client sessions, handshake timestamps and traffic counters
 - Rename client display names without changing keys or VPN IPs
+- Change a managed `/24` VPN network while preserving all keys and client host numbers
+- Create a safety backup and automatically roll back a failed WireGuard network migration
+- Completely reset a managed WireGuard server while keeping packages installed and S2S untouched
 - Generate complete client `.conf` files for manager-created clients
 - Display QR codes; `qrencode` can be installed on demand
 - Show SCP/SFTP transfer instructions for macOS, Linux and Windows PowerShell
@@ -136,7 +139,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.15                         ║
+║                       Version 1.3.16                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────
