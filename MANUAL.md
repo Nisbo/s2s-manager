@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.12**.
+This manual describes **IPsec S2S Manager 1.3.13**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -120,7 +120,7 @@ Changes only the human-readable name. Internal filenames, service names and tech
 Creates the manager-owned strongSwan configuration, VTI script/service and table-220 routes from a saved DEFINED tunnel.
 
 ## [8] Re-apply tunnel configuration
-Regenerates manager-owned files from saved state. It is a configuration operation, not the same as reconnecting an established SA.
+Regenerates manager-owned files from saved state. It is a configuration operation, not the same as reconnecting an established SA. Re-apply existing Debian-to-Debian tunnels after upgrading to version 1.3.13 so their generated strongSwan configuration receives persistent retry behavior.
 
 ## [9] Reconnect tunnel
 Terminates and re-establishes the current IKE/CHILD SAs. Traffic is briefly interrupted.
@@ -501,6 +501,8 @@ A definition is not installed. Use **[7] Install tunnel on Debian**.
 
 ## VTI exists but IKE/CHILD_SA is missing
 Use **[10] Tunnel diagnostics**, inspect recent strongSwan logs and reconnect after both peers are configured.
+
+Managed Debian-to-Debian connections use `start_action = start`, `dpd_action = restart` and `keyingtries = 0`. The final setting starts further retransmission sequences after a temporary network/provider outage instead of stopping after strongSwan's default single sequence. A permanent negotiation error still stops the attempt. UniFi tunnels do not receive this setting because the UniFi side remains responsible for initiating them.
 
 ## DDNS resolves to multiple A records
 A classic VTI needs one concrete remote IPv4 endpoint, so the manager rejects this.

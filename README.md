@@ -26,6 +26,7 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - Remote-network management
 - Generated UniFi configuration reference
 - Install, uninstall, re-apply and reconnect operations
+- Persistent Debian-to-Debian initiation retries after temporary network/provider outages
 - IKE/CHILD_SA, VTI, routing and traffic diagnostics
 - Tunnel backup/restore
 - Discovery and read-only import of existing strongSwan/VTI tunnels
@@ -127,7 +128,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.12                         ║
+║                       Version 1.3.13                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────

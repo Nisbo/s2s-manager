@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.12
+# Version 1.3.13
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.12"
+VERSION="1.3.13"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -3930,7 +3930,7 @@ render_strongswan_config_to_file() {
     local target="$2"
     load_tunnel "${name}" || return 1
 
-    local psk escaped_psk remote_addrs start_action
+    local psk escaped_psk remote_addrs start_action keyingtries_block
     psk="$(read_psk "${name}")" || return 1
     escaped_psk="$(strongswan_escape_string "${psk}")"
 
@@ -3943,7 +3943,11 @@ render_strongswan_config_to_file() {
     # Debian <-> Debian peers should establish themselves after load/restart.
     # UniFi tunnels keep the established behavior where UniFi may initiate.
     start_action="none"
-    [[ "${PEER_TYPE}" == "debian" ]] && start_action="start"
+    keyingtries_block=""
+    if [[ "${PEER_TYPE}" == "debian" ]]; then
+        start_action="start"
+        keyingtries_block=$'        # Keep retrying after temporary network/provider outages.\n        # A permanent negotiation error still stops the attempt.\n        keyingtries = 0\n'
+    fi
 
     mkdir -p "$(dirname "${target}")"
 
@@ -3957,7 +3961,7 @@ connections {
 
         proposals = aes256-sha256-modp2048
 
-        # UniFi IKE lifetime: 28800s (8h).
+${keyingtries_block}        # UniFi IKE lifetime: 28800s (8h).
         # strongSwan's hard IKE lifetime is rekey_time + over_time.
         rekey_time = 26182s
         over_time = 2618s
