@@ -80,6 +80,14 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - Inspect interface state, WireGuard peer/client AllowedIPs, IPv4 forwarding, kernel route selection, UFW routed policy, iptables forwarding and Internet NAT
 - Report a prominent Internet, routed-network or local-service access verdict plus detailed evidence
 
+### Server and VM status
+
+- Read-only provider/DMI, virtualization, OS, kernel, architecture and exposed CPU information
+- DMI-assigned memory where available, Linux-usable/used/available RAM and configured swap
+- Root-filesystem capacity and usage plus uptime and 1/5/15-minute load averages
+- Color-coded warnings for low available memory, missing swap and high root-filesystem usage
+- Explicitly avoids guessing whether a KVM/QEMU guest is managed by Proxmox, OpenStack or another hidden host platform
+
 ## Requirements
 
 - Debian **13**
@@ -128,7 +136,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.13                         ║
+║                       Version 1.3.14                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────

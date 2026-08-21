@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.13**.
+This manual describes **IPsec S2S Manager 1.3.14**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -156,7 +156,11 @@ Transfers a peer bundle directly to the second server, normally into `/root/s2s-
 Validates the bundle and local conflicts, shows a preview, then creates the mirrored local tunnel after confirmation.
 
 ## [20] Show system status
-Shows host-level prerequisite and IPsec/VTI status.
+Shows a read-only server/VM overview followed by host-level prerequisites and IPsec/VTI status. The overview includes DMI vendor/model, detected virtualization, OS, kernel, architecture, exposed CPU model, online vCPU count, memory, swap, root filesystem, uptime and load averages.
+
+Where `dmidecode` exposes a reliable module size, **DMI assigned memory** is shown separately from **Linux usable memory**. Linux usable memory comes from `/proc/meminfo` and excludes firmware, kernel and other reserved regions, so it is normally lower than the booked amount. The booked provider tariff itself is not reliably discoverable from inside the guest.
+
+Memory availability and root-filesystem utilization receive green/yellow/red health messages. Missing swap receives a warning because it gives small VPS instances less protection against short memory spikes. An exposed CPU model may be generic and is not treated as proof of the physical host processor. Likewise, KVM/QEMU detection cannot reliably distinguish Proxmox, OpenStack or another host-management platform.
 
 ## [23] Access Check (read-only)
 Analyses a selected source-to-destination path using live interface, forwarding, route, firewall and NAT state. It never changes the system. WireGuard and UFW retain their dedicated menus at **[21]** and **[22]**.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.13
+# Version 1.3.14
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.13"
+VERSION="1.3.14"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -8800,9 +8800,138 @@ wireguard_status() {
 }
 
 
+server_memory_health() {
+    local available="$1" total="$2"
+    (( total > 0 )) || { printf 'unknown'; return; }
+    if (( available < 268435456 || available * 100 / total < 5 )); then
+        printf 'critical'
+    elif (( available < 536870912 || available * 100 / total < 15 )); then
+        printf 'warning'
+    else
+        printf 'ok'
+    fi
+}
+
+server_disk_health() {
+    local percent="$1"
+    if (( percent >= 90 )); then
+        printf 'critical'
+    elif (( percent >= 80 )); then
+        printf 'warning'
+    else
+        printf 'ok'
+    fi
+}
+
+detect_dmi_memory_bytes() {
+    command_available dmidecode || return 1
+    dmidecode --type memory 2>/dev/null | awk '
+        /^[[:space:]]*Size:[[:space:]]+[0-9]+[[:space:]]+(MB|GB|TB)$/ {
+            value=$2; unit=$3
+            if (unit == "MB") total += value * 1024 * 1024
+            else if (unit == "GB") total += value * 1024 * 1024 * 1024
+            else if (unit == "TB") total += value * 1024 * 1024 * 1024 * 1024
+        }
+        END { if (total > 0) printf "%.0f", total }
+    '
+}
+
+show_server_hardware_status() {
+    local os kernel architecture vendor model virtualization hypervisor_vendor virtualization_type
+    local cpu_model vcpus mem_total_kb mem_available_kb mem_total mem_available mem_used memory_health
+    local swap_total_kb swap_total dmi_memory root_data root_total_kb root_used_kb root_available_kb
+    local root_percent root_total root_used root_available disk_health uptime_seconds load
+
+    section "SERVER / VIRTUAL MACHINE"
+
+    os="$(awk -F= '$1=="PRETTY_NAME"{v=substr($0,index($0,"=")+1); gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)"
+    kernel="$(uname -r 2>/dev/null || echo unknown)"
+    architecture="$(uname -m 2>/dev/null || echo unknown)"
+    vendor="$(sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;}' /sys/class/dmi/id/sys_vendor 2>/dev/null)"
+    model="$(sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;}' /sys/class/dmi/id/product_name 2>/dev/null)"
+    virtualization="$(systemd-detect-virt 2>/dev/null || true)"
+    [[ -n "${virtualization}" ]] || virtualization="unknown"
+    hypervisor_vendor="$(lscpu 2>/dev/null | awk -F: '/^Hypervisor vendor:/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}')"
+    virtualization_type="$(lscpu 2>/dev/null | awk -F: '/^Virtualization type:/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}')"
+
+    printf '%-28s %s\n' "Provider / DMI vendor:" "${vendor:-unknown}"
+    printf '%-28s %s\n' "Virtual hardware:" "${model:-unknown}"
+    printf '%-28s %s\n' "Detected virtualization:" "${virtualization}"
+    [[ -n "${hypervisor_vendor}" ]] && printf '%-28s %s\n' "Hypervisor signature:" "${hypervisor_vendor}"
+    [[ -n "${virtualization_type}" ]] && printf '%-28s %s\n' "Virtualization type:" "${virtualization_type}"
+    if [[ "${virtualization}" != "none" && "${virtualization}" != "unknown" ]]; then
+        printf '%-28s %s\n' "Host management platform:" "not detectable from guest"
+    fi
+    printf '%-28s %s\n' "Operating system:" "${os:-unknown}"
+    printf '%-28s %s\n' "Kernel:" "${kernel}"
+    printf '%-28s %s\n' "Architecture:" "${architecture}"
+
+    echo
+    section "CPU"
+    cpu_model="$(awk -F: '/^(model name|Hardware)[[:space:]]*:/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null)"
+    vcpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+    [[ "${vcpus}" =~ ^[0-9]+$ ]] || vcpus="$(awk '/^processor[[:space:]]*:/{count++} END{print count+0}' /proc/cpuinfo 2>/dev/null)"
+    printf '%-28s %s\n' "CPU model exposed to guest:" "${cpu_model:-unknown}"
+    printf '%-28s %s\n' "Virtual CPUs online:" "${vcpus:-unknown}"
+    info "The exposed CPU model may be generic and need not identify the physical host CPU."
+
+    echo
+    section "MEMORY"
+    mem_total_kb="$(awk '$1=="MemTotal:"{print $2}' /proc/meminfo 2>/dev/null)"
+    mem_available_kb="$(awk '$1=="MemAvailable:"{print $2}' /proc/meminfo 2>/dev/null)"
+    swap_total_kb="$(awk '$1=="SwapTotal:"{print $2}' /proc/meminfo 2>/dev/null)"
+    mem_total=$(( ${mem_total_kb:-0} * 1024 ))
+    mem_available=$(( ${mem_available_kb:-0} * 1024 ))
+    mem_used=$(( mem_total > mem_available ? mem_total - mem_available : 0 ))
+    swap_total=$(( ${swap_total_kb:-0} * 1024 ))
+    dmi_memory="$(detect_dmi_memory_bytes 2>/dev/null || true)"
+    [[ "${dmi_memory}" =~ ^[0-9]+$ ]] && printf '%-28s %s\n' "DMI assigned memory:" "$(human_bytes "${dmi_memory}")"
+    printf '%-28s %s\n' "Linux usable memory:" "$(human_bytes "${mem_total}")"
+    printf '%-28s %s\n' "Currently used:" "$(human_bytes "${mem_used}")"
+    printf '%-28s %s\n' "Currently available:" "$(human_bytes "${mem_available}")"
+    printf '%-28s %s\n' "Swap configured:" "$(human_bytes "${swap_total}")"
+    memory_health="$(server_memory_health "${mem_available}" "${mem_total}")"
+    case "${memory_health}" in
+        critical) error "Available memory is critically low." ;;
+        warning) warn "Available memory is low." ;;
+        ok) ok "Available memory is healthy." ;;
+        *) warn "Memory health could not be evaluated." ;;
+    esac
+    (( swap_total > 0 )) && ok "Swap is configured." || warn "No swap is configured; small VPS instances have less protection against memory spikes."
+    info "Booked/advertised RAM is not reliably available inside the guest; Linux usable memory excludes reserved regions."
+
+    echo
+    section "ROOT FILESYSTEM"
+    root_data="$(df -Pk / 2>/dev/null | awk 'NR==2{gsub(/%/, "", $5); print $2, $3, $4, $5}')"
+    read -r root_total_kb root_used_kb root_available_kb root_percent <<< "${root_data}"
+    root_total=$(( ${root_total_kb:-0} * 1024 ))
+    root_used=$(( ${root_used_kb:-0} * 1024 ))
+    root_available=$(( ${root_available_kb:-0} * 1024 ))
+    root_percent="${root_percent:-0}"
+    printf '%-28s %s\n' "Size:" "$(human_bytes "${root_total}")"
+    printf '%-28s %s (%s%%)\n' "Used:" "$(human_bytes "${root_used}")" "${root_percent}"
+    printf '%-28s %s\n' "Available:" "$(human_bytes "${root_available}")"
+    disk_health="$(server_disk_health "${root_percent}")"
+    case "${disk_health}" in
+        critical) error "Root filesystem usage is critical (90% or more)." ;;
+        warning) warn "Root filesystem usage is high (80% or more)." ;;
+        *) ok "Root filesystem usage is healthy." ;;
+    esac
+
+    echo
+    section "RUNTIME"
+    uptime_seconds="$(awk '{print int($1)}' /proc/uptime 2>/dev/null)"
+    load="$(awk '{print $1 " / " $2 " / " $3}' /proc/loadavg 2>/dev/null)"
+    printf '%-28s %s\n' "Uptime:" "$(human_duration "${uptime_seconds:-0}")"
+    printf '%-28s %s\n' "Load average (1/5/15m):" "${load:-unknown}"
+}
+
 show_system_status() {
     banner
-    section "SYSTEM STATUS"
+    show_server_hardware_status
+
+    echo
+    section "SYSTEM / PREREQUISITES"
 
     show_preflight || true
 
