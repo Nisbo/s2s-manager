@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.18**.
+This manual describes **IPsec S2S Manager 1.3.19**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -277,7 +277,7 @@ The manager detects the Internet egress interface, enables IPv4 forwarding, writ
 
 This is one network route, not one route per WireGuard client.
 
-Table 220 intentionally contains only explicit S2S and WireGuard routes. A catch-all default route there would take precedence over the normal `main` table and could incorrectly send directly connected Docker, Podman, libvirt or VM networks toward the public gateway. Newly installed tunnels prevent that route when the normal `main` table has its own default. For an existing installation, select **[8] Re-apply tunnel configuration** once for each installed tunnel; this deliberately regenerates and runs its VTI startup script. Merely starting the manager never changes routing for this purpose. The system-status page reports a remaining catch-all route read-only. This does not open firewall ports or alter UFW/iptables permissions.
+Table 220 intentionally contains only explicit S2S and WireGuard routes. A catch-all default route there would take precedence over the normal `main` table and could incorrectly send directly connected Docker, Podman, libvirt or VM networks toward the public gateway. The prerequisite setup writes the global strongSwan setting `charon.install_routes = no` in `/etc/strongswan.d/s2s-manager-route-based.conf`. Versions through 1.3.18 placed that block in the plugin include directory, where it was ineffective. Version 1.3.19 detects this through Pre-Flight; only the explicitly confirmed **Install / repair prerequisites** operation moves the setting, removes the exact obsolete manager file and restarts strongSwan. Merely starting the manager does not change routing. The system-status page reports a remaining catch-all route read-only. This does not open firewall ports or alter UFW/iptables permissions.
 
 ## 8.2 Detect/import an existing WireGuard server
 

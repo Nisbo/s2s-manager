@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.18
+# Version 1.3.19
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.18"
+VERSION="1.3.19"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -59,6 +59,8 @@ WG_SERVER_KEY="${WG_DIR}/server.key"
 WG_CONFIG_DIR="/etc/wireguard"
 WG_CONFIG="${WG_CONFIG_DIR}/wg0.conf"
 WG_SYSCTL_FILE="/etc/sysctl.d/99-s2s-manager-wireguard.conf"
+STRONGSWAN_ROUTE_BASED_CONFIG="/etc/strongswan.d/s2s-manager-route-based.conf"
+STRONGSWAN_LEGACY_ROUTE_BASED_CONFIG="/etc/strongswan.d/charon/route-based.conf"
 WG_INTERFACE_DEFAULT="wg0"
 WG_NETWORK_DEFAULT="10.250.0.0/24"
 WG_PORT_DEFAULT="51820"
@@ -406,7 +408,7 @@ agent_disabled() {
 
 route_based_global_ready() {
     grep -Eq '^[[:space:]]*install_routes[[:space:]]*=[[:space:]]*no[[:space:]]*$' \
-        /etc/strongswan.d/charon/route-based.conf 2>/dev/null
+        "${STRONGSWAN_ROUTE_BASED_CONFIG}" 2>/dev/null
 }
 
 ufw_installed() {
@@ -651,11 +653,15 @@ EOF
     printf '%b\n' "${C_GREEN}OK${C_RESET}"
 
     printf '[4/5] Preparing route-based strongSwan mode... '
-    cat > /etc/strongswan.d/charon/route-based.conf <<'EOF'
+    cat > "${STRONGSWAN_ROUTE_BASED_CONFIG}" <<'EOF'
 charon {
     install_routes = no
 }
 EOF
+    # Versions through 1.3.18 placed this top-level charon block inside the
+    # charon plugin include directory, where it was nested incorrectly and had
+    # no effect. Remove only that exact manager legacy file.
+    rm -f -- "${STRONGSWAN_LEGACY_ROUTE_BASED_CONFIG}"
     printf '%b\n' "${C_GREEN}OK${C_RESET}"
 
     printf '[5/5] Restarting and validating strongSwan... '
@@ -4099,15 +4105,6 @@ ip link set ${VTI_INTERFACE} up
 
 grep -q '${DEBIAN_VTI_IP}/30' < <(ip addr show dev ${VTI_INTERFACE}) || \\
 ip addr add ${DEBIAN_VTI_IP}/30 dev ${VTI_INTERFACE}
-
-# Table 220 contains only explicit manager VPN routes. A default route here
-# would shadow Docker/Podman/libvirt and other directly connected main routes.
-# Removal is safe only while the normal main table has its own WAN default.
-if ip -4 route show table main default 2>/dev/null | grep -q .; then
-    while ip -4 route show table 220 default 2>/dev/null | grep -q .; do
-        ip -4 route del default table 220 || exit 1
-    done
-fi
 
 ip route replace ${VTI_NETWORK} dev ${VTI_INTERFACE} table 220
 EOF
