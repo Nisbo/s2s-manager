@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.16
+# Version 1.3.17
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.16"
+VERSION="1.3.17"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -59,6 +59,7 @@ WG_SERVER_KEY="${WG_DIR}/server.key"
 WG_CONFIG_DIR="/etc/wireguard"
 WG_CONFIG="${WG_CONFIG_DIR}/wg0.conf"
 WG_SYSCTL_FILE="/etc/sysctl.d/99-s2s-manager-wireguard.conf"
+TABLE220_MIGRATION_MARKER="${STATE_DIR}/.table220-explicit-routes-v1"
 WG_INTERFACE_DEFAULT="wg0"
 WG_NETWORK_DEFAULT="10.250.0.0/24"
 WG_PORT_DEFAULT="51820"
@@ -370,6 +371,80 @@ missing_packages() {
 
 command_available() {
     command -v "$1" >/dev/null 2>&1
+}
+
+table220_default_route() {
+    ip -4 route show table 220 default 2>/dev/null || true
+}
+
+main_default_route() {
+    ip -4 route show table main default 2>/dev/null || true
+}
+
+remove_table220_default_safely() {
+    local route backup
+    route="$(table220_default_route)"
+    [[ -n "${route}" ]] || return 1
+
+    # Unmatched table-220 traffic may fall through only when the normal main
+    # routing table has its own WAN default route.
+    [[ -n "$(main_default_route)" ]] || return 2
+
+    backup="${BACKUP_DIR}/table220-default-$(date +%Y%m%d-%H%M%S).route"
+    printf '%s\n' "${route}" > "${backup}" || return 3
+    chmod 600 "${backup}"
+
+    while ip -4 route show table 220 default 2>/dev/null | grep -q .; do
+        ip -4 route del default table 220 >/dev/null 2>&1 || return 4
+    done
+    TABLE220_DEFAULT_BACKUP="${backup}"
+    return 0
+}
+
+reconcile_table220_default_route() {
+    local rc
+    TABLE220_DEFAULT_RECONCILED=0
+    TABLE220_DEFAULT_REASON=""
+    [[ -n "$(table220_default_route)" ]] || return 0
+
+    if (( $(installed_tunnel_count) == 0 )); then
+        TABLE220_DEFAULT_REASON="no installed manager-owned S2S tunnel"
+        return 1
+    fi
+
+    if remove_table220_default_safely; then
+        TABLE220_DEFAULT_RECONCILED=1
+        return 0
+    else
+        rc=$?
+    fi
+
+    case "${rc}" in
+        2) TABLE220_DEFAULT_REASON="the main routing table has no default route" ;;
+        3) TABLE220_DEFAULT_REASON="the safety backup could not be written" ;;
+        4) TABLE220_DEFAULT_REASON="the route could not be removed" ;;
+        *) TABLE220_DEFAULT_REASON="unknown routing error" ;;
+    esac
+    return 1
+}
+
+migrate_table220_vti_scripts_once() {
+    TABLE220_VTI_MIGRATED=0
+    TABLE220_VTI_MIGRATION_COUNT=0
+    [[ -f "${TABLE220_MIGRATION_MARKER}" ]] && return 0
+
+    local name
+    while read -r name; do
+        [[ -n "${name}" ]] || continue
+        load_tunnel "${name}" || return 1
+        [[ "${INSTALLED:-0}" == "1" && "${MANAGEMENT:-MANAGED}" != "IMPORTED" ]] || continue
+        render_vti_script "${name}" || return 1
+        ((TABLE220_VTI_MIGRATION_COUNT+=1))
+    done < <(list_tunnel_names)
+
+    printf 'Migrated by S2S Manager %s at %s\n' "${VERSION}" "$(date -Is)" > "${TABLE220_MIGRATION_MARKER}" || return 1
+    chmod 600 "${TABLE220_MIGRATION_MARKER}"
+    TABLE220_VTI_MIGRATED=1
 }
 
 detect_public_ipv4() {
@@ -4095,6 +4170,15 @@ ip link set ${VTI_INTERFACE} up
 
 grep -q '${DEBIAN_VTI_IP}/30' < <(ip addr show dev ${VTI_INTERFACE}) || \\
 ip addr add ${DEBIAN_VTI_IP}/30 dev ${VTI_INTERFACE}
+
+# Table 220 contains only explicit manager VPN routes. A default route here
+# would shadow Docker/Podman/libvirt and other directly connected main routes.
+# Removal is safe only while the normal main table has its own WAN default.
+if ip -4 route show table main default 2>/dev/null | grep -q .; then
+    while ip -4 route show table 220 default 2>/dev/null | grep -q .; do
+        ip -4 route del default table 220 || exit 1
+    done
+fi
 
 ip route replace ${VTI_NETWORK} dev ${VTI_INTERFACE} table 220
 EOF
@@ -9146,6 +9230,16 @@ show_system_status() {
     show_preflight embedded || true
 
     echo
+    section "POLICY ROUTING TABLE 220"
+    if [[ -n "$(table220_default_route)" ]]; then
+        error "Table 220 contains a default route that can shadow local Docker/VM networks."
+        printf '    %s\n' "$(table220_default_route)"
+        info "Re-apply an installed tunnel or restart the manager to repair it safely."
+    else
+        ok "Table 220 has no catch-all default route; unmatched traffic falls through to main."
+    fi
+
+    echo
     section "MANAGED TUNNELS"
     show_existing_tunnels
 
@@ -11224,6 +11318,34 @@ main() {
     fi
 
     setup_required_menu
+
+    if migrate_table220_vti_scripts_once; then
+        if [[ "${TABLE220_VTI_MIGRATED:-0}" == "1" && "${TABLE220_VTI_MIGRATION_COUNT:-0}" -gt 0 ]]; then
+            echo
+            ok "Updated ${TABLE220_VTI_MIGRATION_COUNT} managed VTI startup script(s) for safe table 220 routing."
+            info "Tunnel definitions, keys, firewall rules and active connections were not changed."
+            sleep 2
+        fi
+    else
+        echo
+        warn "Could not update every managed VTI startup script for table 220 safety."
+        info "Use Re-apply tunnel configuration to regenerate an affected tunnel manually."
+        sleep 2
+    fi
+
+    if reconcile_table220_default_route; then
+        if [[ "${TABLE220_DEFAULT_RECONCILED:-0}" == "1" ]]; then
+            echo
+            ok "Removed an unsafe catch-all default route from policy table 220."
+            info "S2S/WireGuard routes and firewall rules were not changed."
+            printf '    Safety backup: %s\n' "${TABLE220_DEFAULT_BACKUP}"
+            sleep 2
+        fi
+    elif [[ -n "${TABLE220_DEFAULT_REASON:-}" ]]; then
+        echo
+        warn "Table 220 default route was not changed: ${TABLE220_DEFAULT_REASON}."
+        sleep 2
+    fi
     main_menu
 }
 

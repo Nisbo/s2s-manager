@@ -54,6 +54,7 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - Full-tunnel Internet access (`AllowedIPs = 0.0.0.0/0`)
 - NAT/forwarding setup and IPv4 forwarding
 - Integration with IPsec policy routing: the whole WireGuard VPN network is added to table 220 when required
+- Keep table 220 limited to explicit VPN routes so Docker/Podman/VM networks fall through to the normal routing table
 - WireGuard status, live handshakes and RX/TX counters
 - Optional UFW rule for the configured WireGuard UDP port
 
@@ -139,7 +140,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.16                         ║
+║                       Version 1.3.17                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────

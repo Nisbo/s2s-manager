@@ -1,6 +1,6 @@
 # IPsec S2S Manager — Manual
 
-This manual describes **IPsec S2S Manager 1.3.16**.
+This manual describes **IPsec S2S Manager 1.3.17**.
 
 All IP addresses, hostnames, client names and networks below are fictional documentation data.
 
@@ -276,6 +276,8 @@ The manager detects the Internet egress interface, enables IPv4 forwarding, writ
 ```
 
 This is one network route, not one route per WireGuard client.
+
+Table 220 intentionally contains only explicit S2S and WireGuard routes. A catch-all default route there would take precedence over the normal `main` table and could incorrectly send directly connected Docker, Podman, libvirt or VM networks toward the public gateway. Version 1.3.17 detects and safely removes such a default only when `main` has its own default route and at least one manager-owned S2S tunnel is installed. The removed route is backed up first. Existing manager-owned VTI startup scripts are regenerated once so the protection also applies after reboot; active connections, tunnel definitions and keys are not changed. This changes route selection only; it does not open firewall ports or alter UFW/iptables permissions.
 
 ## 8.2 Detect/import an existing WireGuard server
 
