@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.4.0
+# Version 1.4.1
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -11147,6 +11147,9 @@ iptables_show_overview() {
     section "IPTABLES / PACKET FILTER OVERVIEW"
     iptables_require_readonly_tools || return
 
+    info "Reading the live packet-filter state. On systems with UFW, Docker or many rules this may take a few seconds..."
+    echo
+
     version="$(iptables --version 2>/dev/null || true)"
     forwarding="$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo unknown)"
     if command_available docker; then
@@ -11319,10 +11322,15 @@ EOF
     case "${destination}" in b|B|"") return ;; e|E) clear_screen; echo "Bye."; exit 0 ;; esac
     valid_ipv4 "${destination}" || { error "Enter one plain destination IPv4 address."; pause; return; }
 
-    read -r -p "Protocol [tcp]: " protocol
-    case "${protocol}" in b|B) return ;; e|E) clear_screen; echo "Bye."; exit 0 ;; esac
-    protocol="$(tr '[:upper:]' '[:lower:]' <<< "${protocol:-tcp}")"
-    [[ "${protocol}" == "tcp" || "${protocol}" == "udp" ]] || { error "Protocol must be tcp or udp."; pause; return; }
+    while :; do
+        read -r -p "Protocol [tcp]: " protocol
+        case "${protocol}" in b|B) return ;; e|E) clear_screen; echo "Bye."; exit 0 ;; esac
+        protocol="$(tr '[:upper:]' '[:lower:]' <<< "${protocol:-tcp}")"
+        if [[ "${protocol}" == "tcp" || "${protocol}" == "udp" ]]; then
+            break
+        fi
+        error "Protocol must be tcp or udp. Please try again, or enter B to go back."
+    done
     read -r -p "Destination port (1-65535): " port
     case "${port}" in b|B|"") return ;; e|E) clear_screen; echo "Bye."; exit 0 ;; esac
     valid_port "${port}" || { error "Port must be between 1 and 65535."; pause; return; }

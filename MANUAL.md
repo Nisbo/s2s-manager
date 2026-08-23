@@ -511,6 +511,8 @@ For the guided analysis, enter the packet as the remote client sends it: source 
 
 The analysis displays route and firewall candidates but deliberately does not claim that every possible ordered nftables/iptables rule set has been evaluated exactly. A real connection from the source remains the end-to-end test. This entire menu is read-only: it never adds, deletes, flushes or changes a rule, policy, route, Docker setting or VPN state.
 
+Collecting the overview can take a few seconds when UFW, Docker or many rules are present; the manager prints a loading notice before querying them. If an invalid transport protocol is entered during path analysis, the same question is repeated instead of cancelling the complete wizard. Enter `B` to return deliberately.
+
 ---
 
 # 12. Backup and restore
