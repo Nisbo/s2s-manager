@@ -84,6 +84,17 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - Inspect interface state, WireGuard peer/client AllowedIPs, IPv4 forwarding, kernel route selection, UFW routed policy, iptables forwarding and Internet NAT
 - Report a prominent Internet, routed-network or local-service access verdict plus detailed evidence
 
+### Read-only iptables / packet-filter diagnostics
+
+- Dedicated **[24] IPTABLES / Packet Filter** main-menu entry
+- Summarize the active IPv4 backend, forwarding state, default policies and rule counts
+- Show complete INPUT/FORWARD/OUTPUT counters and NAT/DNAT/MASQUERADE rules
+- Correlate Docker-published ports with the `DOCKER`, `DOCKER-USER` and `DOCKER-FORWARD` chains
+- Filter live S2S/WireGuard-related rules and show table-220 routing context
+- Analyse an arriving source, ingress interface, original destination, protocol and port
+- Detect an exact DNAT target and explain whether the packet follows INPUT or FORWARD
+- Never add, delete, flush or change a packet-filter rule or policy
+
 ### Server and VM status
 
 - Read-only provider/DMI, virtualization, OS, kernel, architecture and exposed CPU information
@@ -140,7 +151,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.3.19                         ║
+║                       Version 1.4.0                          ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────
@@ -172,6 +183,7 @@ Important managed paths include:
   [18] Transfer Debian peer bundle via SCP
   [19] Import Debian peer bundle               [22] UFW
                                                 [23] Access Check (read-only)
+                                                [24] IPTABLES / Packet Filter (read-only)
 
   [E] Exit
 ```
@@ -217,6 +229,8 @@ Temporary rules use an on-disk systemd timer and are highlighted in yellow with 
 The UFW menu can safely enable, disable and reload the firewall. Activation is refused unless a stored TCP rule covers the detected SSH administration port and, when available, the current SSH client address. Before `ENABLE` is accepted, all rules that will become active are shown again. The manager then verifies both live UFW status and `/etc/ufw/ufw.conf` boot activation. Disabling requires typing `DISABLE`, unloads UFW and disables it at boot while preserving stored rules. Reload is available only while active and repeats the SSH safety check; ordinary `ufw allow` and `ufw delete` operations take effect immediately and normally do not require it.
 
 Choose **[23] Access Check** for a read-only server-side path analysis. Its own submenu remains open after a result. Select a managed WireGuard client or enter a custom source IPv4 network; for custom sources the manager lists all Linux interfaces with their IPv4 addresses and marks the interface suggested by the return route. The selected ingress interface is required for forwarded-route simulation and interface-specific firewall evaluation. Internet, host and CIDR destinations check a forwarded path. **Service on this Debian server** instead asks for TCP/UDP and a local port, verifies a non-loopback listener, and checks whether a matching UFW INPUT rule covers the selected source—including a broader source CIDR. A live explicit iptables FORWARD allow is evaluated together with UFW's routed default policy instead of treating UFW's default DENY as an automatic blocker. Results include a prominent `INTERNET ACCESS`, `ROUTED NETWORK ACCESS`, or `LOCAL SERVICE ACCESS` verdict. No check adds rules or sends traffic as the remote client; only a real test from that device can prove end-to-end access.
+
+Choose **[24] IPTABLES / Packet Filter** to inspect the complete live IPv4 filter and NAT view without changing it. The guided packet-path analysis asks for the original address and port used by the client. If an exact DNAT rule such as a Docker publication is present, it displays the translated container address and explains that the packet traverses FORWARD rather than INPUT. It also shows the route and relevant live rule candidates. Because arbitrary ordered firewall rule sets cannot be proven safely by a short pattern match, this remains evidence-based diagnostics rather than a guaranteed end-to-end verdict.
 
 ## Safety model
 

@@ -92,6 +92,7 @@ IPsec requires UDP **500** and **4500**. WireGuard requires its configured UDP l
   [18] Transfer Debian peer bundle via SCP
   [19] Import Debian peer bundle               [22] UFW
                                                 [23] Access Check (read-only)
+                                                [24] IPTABLES / Packet Filter (read-only)
 ```
 
 ---
@@ -164,6 +165,9 @@ Memory availability and root-filesystem utilization receive green/yellow/red hea
 
 ## [23] Access Check (read-only)
 Analyses a selected source-to-destination path using live interface, forwarding, route, firewall and NAT state. It never changes the system. WireGuard and UFW retain their dedicated menus at **[21]** and **[22]**.
+
+## [24] IPTABLES / Packet Filter (read-only)
+Shows the live IPv4 filter and NAT state, default policies, counters, Docker chains, published ports and VPN-related rules. Its guided path analysis detects exact DNAT mappings and distinguishes local INPUT traffic from routed or container-bound FORWARD traffic. It never creates, deletes, flushes or changes rules.
 
 ---
 
@@ -492,7 +496,24 @@ The source screen displays the current SSH peer from `SSH_CONNECTION` only as in
 
 ---
 
-# 11. Backup and restore
+# 11. Read-only iptables / packet-filter diagnostics
+
+Choose **[24] IPTABLES / Packet Filter** for direct inspection of the live IPv4 packet-filter. The submenu provides:
+
+- backend, IPv4 forwarding, UFW/Docker state, default policies and rule counts;
+- ordered INPUT, FORWARD and OUTPUT rules with packet/byte counters;
+- complete NAT rules in readable and exact command syntax;
+- Docker publications and the `DOCKER`, `DOCKER-USER` and `DOCKER-FORWARD` chains;
+- a filtered S2S/WireGuard view with table-220 routing context;
+- a guided source-to-destination-and-port analysis.
+
+For the guided analysis, enter the packet as the remote client sends it: source IPv4, ingress interface, original destination IPv4, TCP/UDP and original destination port. For example, a client may connect to `10.200.204.1:5341` while Docker translates that address to `172.18.0.2:80`. When an exact DNAT rule is found, the manager shows the translation and identifies `PREROUTING/DNAT -> FORWARD` as the path. Without DNAT, a destination address owned by the server follows INPUT; another destination follows FORWARD.
+
+The analysis displays route and firewall candidates but deliberately does not claim that every possible ordered nftables/iptables rule set has been evaluated exactly. A real connection from the source remains the end-to-end test. This entire menu is read-only: it never adds, deletes, flushes or changes a rule, policy, route, Docker setting or VPN state.
+
+---
+
+# 12. Backup and restore
 
 IPsec tunnel backups are available through **[16]**. WireGuard migration backups are stored separately under:
 
@@ -504,7 +525,7 @@ Backups and exports can contain PSKs/private keys. Protect them accordingly.
 
 ---
 
-# 12. Troubleshooting
+# 13. Troubleshooting
 
 ## IPsec tunnel is DEFINED but not connected
 A definition is not installed. Use **[7] Install tunnel on Debian**.
@@ -543,7 +564,7 @@ The manager creates a backup immediately before migration and automatically atte
 
 ---
 
-# 13. Security notes
+# 14. Security notes
 
 - Never publish PSKs, WireGuard private keys, client exports or QR codes.
 - WireGuard **public keys** are not secret; private keys and PSKs are.

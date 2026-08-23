@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.3.19
+# Version 1.4.0
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.3.19"
+VERSION="1.4.0"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -11107,6 +11107,330 @@ EOF
     done
 }
 
+# ==============================================================================
+# Read-only iptables / packet-filter diagnostics
+# ==============================================================================
+
+iptables_require_readonly_tools() {
+    if ! command_available iptables; then
+        error "iptables is not available on this server."
+        info "On modern Debian systems it normally provides the nftables-compatible iptables view."
+        pause
+        return 1
+    fi
+}
+
+iptables_backend_label() {
+    local version
+    version="$(iptables --version 2>/dev/null || true)"
+    case "${version}" in
+        *nf_tables*) printf 'nftables backend (iptables-nft)' ;;
+        *legacy*) printf 'legacy iptables backend' ;;
+        *) printf 'backend not identified' ;;
+    esac
+}
+
+iptables_chain_policy() {
+    local table="$1" chain="$2" policy
+    policy="$(iptables -t "${table}" -S "${chain}" 2>/dev/null | awk -v c="${chain}" '$1=="-P" && $2==c {print $3; exit}')"
+    printf '%s' "${policy:-not available}"
+}
+
+iptables_rule_count() {
+    local table="$1"
+    iptables -t "${table}" -S 2>/dev/null | awk '$1=="-A" {count++} END {print count+0}'
+}
+
+iptables_show_overview() {
+    local version forwarding docker_state="not installed"
+    banner
+    section "IPTABLES / PACKET FILTER OVERVIEW"
+    iptables_require_readonly_tools || return
+
+    version="$(iptables --version 2>/dev/null || true)"
+    forwarding="$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo unknown)"
+    if command_available docker; then
+        if docker info >/dev/null 2>&1; then docker_state="running"; else docker_state="installed, daemon unavailable"; fi
+    fi
+
+    printf '%-30s %s\n' "iptables version:" "${version:-unknown}"
+    printf '%-30s %s\n' "Rule backend:" "$(iptables_backend_label)"
+    printf '%-30s %s\n' "IPv4 forwarding:" "${forwarding}"
+    printf '%-30s %s\n' "UFW:" "$(if ! ufw_installed; then echo 'not installed'; elif ufw_active; then echo active; else echo inactive; fi)"
+    printf '%-30s %s\n' "Docker:" "${docker_state}"
+
+    section "DEFAULT FILTER POLICIES"
+    printf '%-16s %s\n' "INPUT" "$(iptables_chain_policy filter INPUT)"
+    printf '%-16s %s\n' "FORWARD" "$(iptables_chain_policy filter FORWARD)"
+    printf '%-16s %s\n' "OUTPUT" "$(iptables_chain_policy filter OUTPUT)"
+
+    section "RULE COUNTS"
+    printf '%-16s %s\n' "filter" "$(iptables_rule_count filter)"
+    printf '%-16s %s\n' "nat" "$(iptables_rule_count nat)"
+    printf '%-16s %s\n' "mangle" "$(iptables_rule_count mangle)"
+    echo
+    info "Counters and rules shown here are the live IPv4 packet-filter state."
+    info "No firewall rule or policy was changed."
+    pause
+}
+
+iptables_show_filter_rules() {
+    local chain
+    banner
+    section "FILTER RULES / FORWARDING"
+    iptables_require_readonly_tools || return
+    for chain in INPUT FORWARD OUTPUT; do
+        section "${chain} CHAIN"
+        if ! iptables -L "${chain}" -n -v --line-numbers 2>&1; then
+            warn "The ${chain} chain could not be displayed."
+        fi
+    done
+    echo
+    info "Rules are displayed in evaluation order with packet and byte counters."
+    info "No firewall rule or policy was changed."
+    pause
+}
+
+iptables_show_nat_rules() {
+    banner
+    section "NAT / DNAT / MASQUERADE"
+    iptables_require_readonly_tools || return
+    if ! iptables -t nat -L -n -v --line-numbers 2>&1; then
+        warn "The IPv4 nat table could not be displayed."
+    fi
+    section "EXACT NAT RULE SYNTAX"
+    iptables -t nat -S 2>&1 || true
+    echo
+    info "DNAT changes the destination before FORWARD filtering; MASQUERADE/SNAT changes the source on egress."
+    info "No NAT rule was changed."
+    pause
+}
+
+iptables_show_docker_rules() {
+    local chain
+    banner
+    section "DOCKER PORTS AND FIREWALL CHAINS"
+    iptables_require_readonly_tools || return
+    if command_available docker; then
+        section "PUBLISHED CONTAINER PORTS"
+        docker ps --format 'table {{.Names}}\t{{.Networks}}\t{{.Ports}}' 2>&1 || warn "Docker is installed, but its daemon could not be queried."
+    else
+        info "Docker is not installed. Live Docker-created chains may still be shown below if they exist."
+    fi
+    for chain in DOCKER DOCKER-USER DOCKER-FORWARD; do
+        section "${chain}"
+        if [[ "${chain}" == "DOCKER" ]]; then
+            iptables -t nat -S "${chain}" 2>/dev/null || info "Chain ${chain} is not present in the nat table."
+        else
+            iptables -S "${chain}" 2>/dev/null || info "Chain ${chain} is not present in the filter table."
+        fi
+    done
+    echo
+    info "A published container port normally uses DNAT and therefore traverses FORWARD, not INPUT."
+    info "No Docker or firewall setting was changed."
+    pause
+}
+
+iptables_show_vpn_rules() {
+    local output
+    banner
+    section "S2S / WIREGUARD PACKET-FILTER RULES"
+    iptables_require_readonly_tools || return
+    output="$(iptables-save -c 2>/dev/null | grep -Ei '(^|[[:space:]])(-i|-o)[[:space:]]+(wg|ipsec|vti)|10\.200\.|10\.240\.|10\.250\.|MASQUERADE' || true)"
+    if [[ -n "${output}" ]]; then
+        printf '%s\n' "${output}"
+    else
+        info "No obvious IPv4 rule containing a wg/ipsec/vti interface, known VPN subnet or MASQUERADE was found."
+    fi
+    section "POLICY-ROUTING CONTEXT (TABLE 220)"
+    ip -4 route show table 220 2>/dev/null || info "Routing table 220 is unavailable or empty."
+    echo
+    info "This is a filtered diagnostic view; use the complete filter/NAT views for rule order."
+    info "No firewall or routing state was changed."
+    pause
+}
+
+iptables_find_dnat_rule() {
+    local destination="$1" protocol="$2" port="$3"
+    iptables -t nat -S 2>/dev/null | awk -v destination="${destination}" -v protocol="${protocol}" -v port="${port}" '
+        $1 == "-A" {
+            dest=""; proto=""; dport=""; jump=""; target=""
+            for (i=1; i<=NF; i++) {
+                if ($i=="-d") dest=$(i+1)
+                else if ($i=="-p") proto=$(i+1)
+                else if ($i=="--dport") dport=$(i+1)
+                else if ($i=="-j") jump=$(i+1)
+                else if ($i=="--to-destination") target=$(i+1)
+            }
+            sub(/\/32$/, "", dest)
+            if (jump=="DNAT" && (dest=="" || dest=="0.0.0.0/0" || dest==destination) && proto==protocol && dport==port && target!="") {
+                print target "\t" $0
+            }
+        }'
+}
+
+iptables_is_local_ipv4() {
+    local address="$1" cidr
+    while read -r cidr; do
+        [[ "${cidr%%/*}" == "${address}" ]] && return 0
+    done < <(ip -o -4 addr show 2>/dev/null | awk '{print $4}')
+    return 1
+}
+
+iptables_show_relevant_rules() {
+    local source="$1" destination="$2" protocol="$3" port="$4" ingress="$5"
+    local candidates
+    candidates="$(iptables-save -c 2>/dev/null | grep -E "${source//./\\.}|${destination//./\\.}|--dport ${port}([[:space:]]|$)|-i ${ingress}([[:space:]]|$)" | grep -E -- "-p ${protocol}([[:space:]]|$)|${source//./\\.}|${destination//./\\.}|-i ${ingress}([[:space:]]|$)" || true)"
+    if [[ -n "${candidates}" ]]; then
+        printf '%s\n' "${candidates}"
+    else
+        info "No rule containing the selected source, destination, port or ingress interface was found."
+    fi
+}
+
+iptables_analyze_packet_path() {
+    local source destination protocol port ingress suggested dnat_data dnat_first target rule
+    local target_ip target_port route path verdict
+    banner
+    section "ANALYZE PACKET PATH (READ-ONLY)"
+    iptables_require_readonly_tools || return
+    cat <<'EOF'
+Describe the packet as it arrives at this server. For a published Docker
+service, enter the server/VTI address and public port used by the client,
+not the container address. The manager detects an exact IPv4 DNAT rule.
+
+This analysis reads live rules and routes. It sends no packet and changes
+no firewall, Docker, VPN, interface or routing configuration.
+EOF
+    echo
+    read -r -p "Remote source IPv4: " source
+    case "${source}" in b|B|"") return ;; e|E) clear_screen; echo "Bye."; exit 0 ;; esac
+    valid_ipv4 "${source}" || { error "Enter one plain source IPv4 address, without CIDR, URL or port."; pause; return; }
+
+    ACCESS_SOURCE_VALUE="${source}/32"
+    suggested="$(access_check_suggest_interface "${source}")"
+    access_check_select_interface "${suggested}" || return
+    ingress="${ACCESS_INGRESS_IF}"
+
+    echo
+    echo "Enter the IPv4 address to which the client connects before possible DNAT."
+    echo "Example: the server VTI address 10.200.204.1 for 10.200.204.1:5341."
+    read -r -p "Original destination IPv4: " destination
+    case "${destination}" in b|B|"") return ;; e|E) clear_screen; echo "Bye."; exit 0 ;; esac
+    valid_ipv4 "${destination}" || { error "Enter one plain destination IPv4 address."; pause; return; }
+
+    read -r -p "Protocol [tcp]: " protocol
+    case "${protocol}" in b|B) return ;; e|E) clear_screen; echo "Bye."; exit 0 ;; esac
+    protocol="$(tr '[:upper:]' '[:lower:]' <<< "${protocol:-tcp}")"
+    [[ "${protocol}" == "tcp" || "${protocol}" == "udp" ]] || { error "Protocol must be tcp or udp."; pause; return; }
+    read -r -p "Destination port (1-65535): " port
+    case "${port}" in b|B|"") return ;; e|E) clear_screen; echo "Bye."; exit 0 ;; esac
+    valid_port "${port}" || { error "Port must be between 1 and 65535."; pause; return; }
+    port="$((10#${port}))"
+
+    dnat_data="$(iptables_find_dnat_rule "${destination}" "${protocol}" "${port}")"
+    dnat_first="$(head -1 <<< "${dnat_data}")"
+    target="${dnat_first%%$'\t'*}"
+    rule="${dnat_first#*$'\t'}"
+
+    banner
+    section "PACKET PATH RESULT"
+    printf '%-28s %s\n' "Source:" "${source}"
+    printf '%-28s %s\n' "Ingress interface:" "${ingress}"
+    printf '%-28s %s/%s\n' "Original destination:" "${destination}" "${port}"
+    printf '%-28s %s\n' "Protocol:" "${protocol^^}"
+
+    if [[ -n "${dnat_first}" ]]; then
+        target_ip="${target%%:*}"
+        target_port="${target##*:}"
+        [[ "${target}" == "${target_ip}" ]] && target_port="${port}"
+        path="PREROUTING/DNAT -> FORWARD -> ${target_ip}:${target_port}"
+        verdict="DNAT/FORWARD PATH DETECTED"
+        section "DNAT DECISION"
+        ok "Exact DNAT rule found. The packet is filtered through FORWARD, not INPUT."
+        printf '%-28s %s\n' "Translated destination:" "${target_ip}:${target_port}"
+        printf '%-28s %s\n' "Packet path:" "${path}"
+        echo "    ${rule}"
+        section "ROUTE TO TRANSLATED TARGET"
+        route="$(ip -4 route get "${target_ip}" from "${source}" iif "${ingress}" 2>/dev/null || ip -4 route get "${target_ip}" 2>/dev/null || true)"
+        if [[ -n "${route}" ]]; then ok "A route to ${target_ip} exists."; echo "    ${route}"; else error "No route to ${target_ip} was found."; fi
+        if command_available docker; then
+            section "MATCHING DOCKER PORT PUBLICATION"
+            docker ps --format '{{.Names}}  {{.Ports}}' 2>/dev/null | grep -F "${destination}:${port}->${target_port}/" || info "No matching running Docker publication was identified."
+        fi
+    elif iptables_is_local_ipv4 "${destination}"; then
+        path="INPUT (local address; no exact DNAT rule found)"
+        verdict="LOCAL INPUT PATH DETECTED"
+        section "PATH DECISION"
+        ok "The destination belongs to this server and no exact DNAT rule was found."
+        printf '%-28s %s\n' "Packet path:" "${path}"
+        section "LOCAL LISTENER"
+        if command_available ss && ss -H -ln"${protocol:0:1}" "sport = :${port}" 2>/dev/null | grep -q .; then
+            ok "A local ${protocol^^} listener exists on port ${port}."
+            ss -H -ln"${protocol:0:1}" "sport = :${port}" 2>/dev/null | sed 's/^/    /'
+        else
+            warn "No local ${protocol^^} listener was found on port ${port}."
+        fi
+    else
+        path="FORWARD (routed destination; no exact DNAT rule found)"
+        verdict="ROUTED FORWARD PATH DETECTED"
+        section "PATH DECISION"
+        info "The destination is not a local IPv4 address and no exact DNAT rule was found."
+        printf '%-28s %s\n' "Packet path:" "${path}"
+        section "ROUTE TO DESTINATION"
+        route="$(ip -4 route get "${destination}" from "${source}" iif "${ingress}" 2>/dev/null || ip -4 route get "${destination}" 2>/dev/null || true)"
+        if [[ -n "${route}" ]]; then ok "A route to ${destination} exists."; echo "    ${route}"; else error "No route to ${destination} was found."; fi
+    fi
+
+    section "RELEVANT LIVE RULE CANDIDATES"
+    iptables_show_relevant_rules "${source}" "${target_ip:-${destination}}" "${protocol}" "${target_port:-${port}}" "${ingress}"
+    if ufw_installed; then
+        section "UFW FORWARD / INPUT CANDIDATES"
+        ufw status numbered 2>/dev/null | grep -E "ALLOW (FWD|IN)|DENY (FWD|IN)|REJECT (FWD|IN)" || info "No formatted UFW allow/deny candidates are visible."
+    fi
+    section "ASSESSMENT"
+    printf '%b%s%b\n' "${C_CYAN}${C_BOLD}" "${verdict}" "${C_RESET}"
+    info "The detected chain and route are shown above. A read-only inspection cannot prove the final ordered firewall verdict or remote service response."
+    info "Test from the actual client for end-to-end confirmation. No state was changed."
+    pause
+}
+
+iptables_management_menu() {
+    local choice
+    while :; do
+        banner
+        section "IPTABLES / PACKET FILTER (READ-ONLY)"
+        cat <<'EOF'
+Inspect the live IPv4 packet-filter, NAT and Docker/VPN rule state.
+This section never adds, deletes, flushes or changes a rule or policy.
+
+  [1] Overview and default policies
+  [2] Filter rules (INPUT / FORWARD / OUTPUT)
+  [3] NAT / DNAT / MASQUERADE rules
+  [4] Docker rules and published ports
+  [5] S2S / WireGuard-related rules
+  [6] Analyze source -> destination -> port
+  [B] Back to main menu
+  [E] Exit
+EOF
+        echo
+        read -r -p "Selection: " choice
+        case "${choice}" in
+            1) iptables_show_overview ;;
+            2) iptables_show_filter_rules ;;
+            3) iptables_show_nat_rules ;;
+            4) iptables_show_docker_rules ;;
+            5) iptables_show_vpn_rules ;;
+            6) iptables_analyze_packet_path ;;
+            b|B|0|"") return ;;
+            e|E) clear_screen; echo "Bye."; exit 0 ;;
+            *) error "Invalid selection."; sleep 1 ;;
+        esac
+    done
+}
+
+# End read-only iptables / packet-filter diagnostics
+
 main_menu() {
     while :; do
         banner
@@ -11159,6 +11483,7 @@ main_menu() {
             "  [21] WireGuard"
             "  [22] UFW"
             "  [23] Access Check (read-only)"
+            "  [24] IPTABLES / Packet Filter (read-only)"
         )
 
         render_menu_pair \
@@ -11204,6 +11529,7 @@ main_menu() {
             21) wireguard_menu ;;
             22) ufw_management_menu ;;
             23) access_check_menu ;;
+            24) iptables_management_menu ;;
             [eE]|0) clear_screen; echo "Bye."; exit 0 ;;
             *) error "Invalid selection."; sleep 1 ;;
         esac
