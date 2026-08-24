@@ -104,6 +104,8 @@ The main menu starts with a compact local server identity block. It shows the ho
 ## [1] Show tunnel configuration
 Displays the saved definition, peer type, management/connection state, public endpoint, Authentication ID, VTI interface/key, `/30` transfer network and configured remote networks. Read-only.
 
+The tunnel selection also offers **[A] Show all tunnel networks**. This combined view first lists every tunnel with interface, connection state and both VTI addresses. A second table contains every `/30` transfer network and every configured remote network. `PRESENT` means table 220 currently routes that network through the expected VTI interface; `MISSING` or `WRONG` identifies live routing that needs review. A saved tunnel that has not been installed is labelled `NOT INSTALLED`, because a missing live route is expected in that state. The overview never changes or repairs a route.
+
 ## [2] Add S2S tunnel
 Starts the creation wizard: display name, peer type, peer endpoint, Debian public IP, transfer network, Authentication ID, remote networks and PSK. The manager validates conflicts before saving/installing.
 

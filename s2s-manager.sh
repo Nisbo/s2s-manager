@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.4.2
+# Version 1.4.3
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.4.2"
+VERSION="1.4.3"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -2094,7 +2094,7 @@ show_existing_tunnels() {
 
 select_tunnel() {
     local -a names=()
-    local name selection i
+    local name selection i allow_all_networks="${1:-0}"
 
     while read -r name; do
         [[ -n "${name}" ]] && names+=("${name}")
@@ -2111,6 +2111,10 @@ select_tunnel() {
         fi
     done
     echo
+    if [[ "${allow_all_networks}" == "all_networks" ]]; then
+        echo "  [A] Show all tunnel networks"
+        echo
+    fi
     echo "Enter tunnel number and press ENTER."
     echo "B = Back    E = Exit"
     echo
@@ -2119,6 +2123,11 @@ select_tunnel() {
     case "${selection}" in
         ""|b|B|0) return 1 ;;
         e|E) clear_screen; echo "Bye."; exit 0 ;;
+        a|A)
+            [[ "${allow_all_networks}" == "all_networks" ]] || return 1
+            SELECTED_TUNNEL="__ALL_NETWORKS__"
+            return 0
+            ;;
     esac
 
     [[ "${selection}" =~ ^[0-9]+$ ]] || return 1
@@ -6828,6 +6837,134 @@ delete_tunnel_completely() {
 # Configuration views
 # ==============================================================================
 
+tunnel_table220_route_state() {
+    local network="$1" interface="$2" output route_interface line
+    output="$(ip -4 route show table 220 "${network}" 2>/dev/null || true)"
+    while IFS= read -r line; do
+        [[ "${line%% *}" == "${network}" ]] || continue
+        route_interface="$(awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' <<< "${line}")"
+        if [[ "${route_interface}" == "${interface}" ]]; then
+            printf 'PRESENT'
+        else
+            printf 'WRONG: %s' "${route_interface:-unknown}"
+        fi
+        return 0
+    done <<< "${output}"
+    printf 'MISSING'
+}
+
+print_tunnel_route_state_cell() {
+    local state="$1" width="$2"
+    case "${state}" in
+        PRESENT) print_table_cell "${state}" "${width}" "${C_GREEN}${C_BOLD}" "${C_RESET}" ;;
+        MISSING|WRONG:*) print_table_cell "${state}" "${width}" "${C_RED}${C_BOLD}" "${C_RESET}" ;;
+        *) print_table_cell "${state}" "${width}" ;;
+    esac
+}
+
+show_all_tunnel_networks() {
+    local name display interface transfer local_vti remote_vti connection actual_state route route_state
+    local name_width=24 interface_width=10 connection_width=16 vti_width=18
+    local type_width=10 network_width=22 route_width=18 gap="  " count=0
+
+    banner
+    section "ALL TUNNEL NETWORKS"
+    echo "Shows every configured S2S transfer and remote network together with"
+    echo "its expected VTI interface and current route state in table 220."
+    echo "This overview is read-only and does not add, repair or remove routes."
+    echo
+
+    print_table_cell "Tunnel" "${name_width}"; printf '%s' "${gap}"
+    print_table_cell "Interface" "${interface_width}"; printf '%s' "${gap}"
+    print_table_cell "Connection" "${connection_width}"; printf '%s' "${gap}"
+    print_table_cell "Local VTI" "${vti_width}"; printf '%s' "${gap}"
+    print_table_cell "Remote VTI" "${vti_width}"; printf '\n'
+    table_divider_segment "${name_width}"; printf '%s' "${gap}"
+    table_divider_segment "${interface_width}"; printf '%s' "${gap}"
+    table_divider_segment "${connection_width}"; printf '%s' "${gap}"
+    table_divider_segment "${vti_width}"; printf '%s' "${gap}"
+    table_divider_segment "${vti_width}"; printf '\n'
+
+    while read -r name; do
+        [[ -n "${name}" ]] || continue
+        load_tunnel "${name}" || continue
+        display="${DISPLAY_NAME:-${NAME}}"
+        interface="${VTI_INTERFACE}"
+        transfer="${VTI_NETWORK}"
+        local_vti="${DEBIAN_VTI_IP}"
+        remote_vti="${UNIFI_VTI_IP}"
+        actual_install_state "${name}" || true
+        actual_state="${ACTUAL_INSTALL_STATE:-UNKNOWN}"
+        case "${actual_state}" in
+            INSTALLED|IMPORTED) connection="$(tunnel_connection_state "${name}")" ;;
+            PARTIAL) connection="BROKEN" ;;
+            *) connection="-" ;;
+        esac
+        print_table_cell "${display}" "${name_width}"; printf '%s' "${gap}"
+        print_table_cell "${interface}" "${interface_width}"; printf '%s' "${gap}"
+        case "${connection}" in
+            CONNECTED) print_table_cell "${connection}" "${connection_width}" "${C_GREEN}${C_BOLD}" "${C_RESET}" ;;
+            DISCONNECTED|BROKEN) print_table_cell "${connection}" "${connection_width}" "${C_RED}${C_BOLD}" "${C_RESET}" ;;
+            *) print_table_cell "${connection}" "${connection_width}" ;;
+        esac
+        printf '%s' "${gap}"
+        print_table_cell "${local_vti}" "${vti_width}"; printf '%s' "${gap}"
+        print_table_cell "${remote_vti}" "${vti_width}"; printf '\n'
+        count=$((count + 1))
+    done < <(list_tunnel_names)
+
+    if (( count == 0 )); then
+        info "No tunnels are configured."
+        pause
+        return
+    fi
+
+    section "NETWORKS AND TABLE 220 ROUTES"
+    print_table_cell "Tunnel" "${name_width}"; printf '%s' "${gap}"
+    print_table_cell "Interface" "${interface_width}"; printf '%s' "${gap}"
+    print_table_cell "Type" "${type_width}"; printf '%s' "${gap}"
+    print_table_cell "Network" "${network_width}"; printf '%s' "${gap}"
+    print_table_cell "Table 220 route" "${route_width}"; printf '\n'
+    table_divider_segment "${name_width}"; printf '%s' "${gap}"
+    table_divider_segment "${interface_width}"; printf '%s' "${gap}"
+    table_divider_segment "${type_width}"; printf '%s' "${gap}"
+    table_divider_segment "${network_width}"; printf '%s' "${gap}"
+    table_divider_segment "${route_width}"; printf '\n'
+
+    while read -r name; do
+        [[ -n "${name}" ]] || continue
+        load_tunnel "${name}" || continue
+        display="${DISPLAY_NAME:-${NAME}}"
+        interface="${VTI_INTERFACE}"
+        transfer="${VTI_NETWORK}"
+        actual_install_state "${name}" || true
+        actual_state="${ACTUAL_INSTALL_STATE:-UNKNOWN}"
+
+        if [[ "${actual_state}" == "DEFINED" ]]; then route_state="NOT INSTALLED"; else route_state="$(tunnel_table220_route_state "${transfer}" "${interface}")"; fi
+        print_table_cell "${display}" "${name_width}"; printf '%s' "${gap}"
+        print_table_cell "${interface}" "${interface_width}"; printf '%s' "${gap}"
+        print_table_cell "TRANSFER" "${type_width}"; printf '%s' "${gap}"
+        print_table_cell "${transfer}" "${network_width}"; printf '%s' "${gap}"
+        print_tunnel_route_state_cell "${route_state}" "${route_width}"; printf '\n'
+
+        while read -r route; do
+            [[ -n "${route}" ]] || continue
+            if [[ "${actual_state}" == "DEFINED" ]]; then route_state="NOT INSTALLED"; else route_state="$(tunnel_table220_route_state "${route}" "${interface}")"; fi
+            print_table_cell "" "${name_width}"; printf '%s' "${gap}"
+            print_table_cell "${interface}" "${interface_width}"; printf '%s' "${gap}"
+            print_table_cell "REMOTE" "${type_width}"; printf '%s' "${gap}"
+            print_table_cell "${route}" "${network_width}"; printf '%s' "${gap}"
+            print_tunnel_route_state_cell "${route_state}" "${route_width}"; printf '\n'
+        done < <(read_routes "${name}")
+    done < <(list_tunnel_names)
+
+    echo
+    printf '%bPRESENT%b = route uses the expected interface.  ' "${C_GREEN}" "${C_RESET}"
+    printf '%bMISSING / WRONG%b = live routing needs review.\n' "${C_RED}" "${C_RESET}"
+    info "A defined but not installed tunnel is labelled NOT INSTALLED instead of MISSING."
+    pause
+}
+
 show_tunnel_details() {
     local name="$1"
     load_tunnel "${name}" || return 1
@@ -6930,7 +7067,11 @@ show_configuration() {
     echo "Shows the complete saved configuration and current connection state of a tunnel."
     echo "This is read-only; no tunnel settings or Debian system files are changed."
     echo
-    select_tunnel || return
+    select_tunnel "all_networks" || return
+    if [[ "${SELECTED_TUNNEL}" == "__ALL_NETWORKS__" ]]; then
+        show_all_tunnel_networks
+        return
+    fi
     show_tunnel_details "${SELECTED_TUNNEL}"
     pause
 }

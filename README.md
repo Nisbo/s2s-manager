@@ -24,6 +24,7 @@ The manager guides you through setup, validates conflicts, creates and maintains
 - Automatic VTI interface and mark/key allocation
 - Network overlap, route, endpoint and Authentication-ID conflict validation
 - Remote-network management
+- Combined read-only overview of every tunnel transfer/remote network and its live table-220 route state
 - Generated UniFi configuration reference
 - Install, uninstall, re-apply and reconnect operations
 - Persistent Debian-to-Debian initiation retries after temporary network/provider outages
@@ -152,7 +153,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.4.2                          ║
+║                       Version 1.4.3                          ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────
