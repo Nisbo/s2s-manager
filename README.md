@@ -97,6 +97,7 @@ The manager guides you through setup, validates conflicts, creates and maintains
 
 ### Server and VM status
 
+- Show the server hostname, primary IPv4 and every non-loopback global IPv4/interface directly on the main menu
 - Read-only provider/DMI, virtualization, OS, kernel, architecture and exposed CPU information
 - DMI-assigned memory where available, Linux-usable/used/available RAM and configured swap
 - Root-filesystem capacity and usage plus uptime and 1/5/15-minute load averages
@@ -151,7 +152,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.4.1                          ║
+║                       Version 1.4.2                          ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────

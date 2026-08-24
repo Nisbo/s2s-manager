@@ -72,6 +72,8 @@ IPsec requires UDP **500** and **4500**. WireGuard requires its configured UDP l
 
 # 4. Main menu
 
+The main menu starts with a compact local server identity block. It shows the hostname, the primary IPv4 selected by the kernel's default route and every non-loopback global IPv4 address together with its Linux interface. This includes relevant VTI, WireGuard and container-bridge addresses when Linux reports them with global scope. The values come only from local hostname, address and route information; opening the menu performs no external IP lookup.
+
 ```text
   TUNNEL CONFIGURATION                         TUNNEL OPERATIONS
   [1] Show tunnel configuration                [7] Install tunnel on Debian

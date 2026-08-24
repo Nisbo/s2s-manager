@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.4.1
+# Version 1.4.2
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.4.1"
+VERSION="1.4.2"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -190,6 +190,38 @@ banner() {
     printf '%b' "${C_RESET}"
     echo
     printf 'State directory: %b%s%b\n' "${C_CYAN}" "${STATE_DIR}" "${C_RESET}"
+    echo
+}
+
+show_server_identity_summary() {
+    local server_hostname primary_ipv4 interface cidr found=0 marker
+    server_hostname="$(hostname 2>/dev/null || true)"
+    if [[ -z "${server_hostname}" && -r /etc/hostname ]]; then
+        server_hostname="$(head -1 /etc/hostname 2>/dev/null || true)"
+    fi
+    primary_ipv4="$(detect_public_ipv4)"
+
+    printf '%-20s %s\n' "Server hostname:" "${server_hostname:-unknown}"
+    printf '%-20s %s\n' "Primary IPv4:" "${primary_ipv4:-not detected}"
+    printf '%-20s' "IPv4 addresses:"
+
+    while read -r interface cidr; do
+        [[ -n "${interface}" && -n "${cidr}" ]] || continue
+        interface="${interface%%@*}"
+        [[ "${interface}" == "lo" ]] && continue
+        marker=""
+        [[ "${cidr%%/*}" == "${primary_ipv4}" ]] && marker=" [primary]"
+        if (( found == 0 )); then
+            printf ' %s  %s%s\n' "${interface}" "${cidr}" "${marker}"
+        else
+            printf '%-20s %s  %s%s\n' "" "${interface}" "${cidr}" "${marker}"
+        fi
+        found=1
+    done < <(ip -o -4 addr show scope global 2>/dev/null | awk '{print $2, $4}')
+
+    if (( found == 0 )); then
+        printf ' none detected\n'
+    fi
     echo
 }
 
@@ -11442,6 +11474,7 @@ EOF
 main_menu() {
     while :; do
         banner
+        show_server_identity_summary
 
         section "CONFIGURED TUNNELS"
         show_existing_tunnels
