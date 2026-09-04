@@ -8,7 +8,7 @@ The project is intended for administrators who want guided, reviewable changes w
 
 ## Contents
 
-- [What is S2S Manager?](#what-is-s2s-manager)
+- [Why S2S Manager?](#why-s2s-manager)
 - [What it manages](#what-it-manages)
 - [Highlights](#highlights)
 - [Safety model](#safety-model)
@@ -21,13 +21,13 @@ The project is intended for administrators who want guided, reviewable changes w
 - [Important limitations](#important-limitations)
 - [Documentation](#documentation)
 
-## What is S2S Manager?
+## Why S2S Manager?
 
-S2S Manager started as a personal collection of notes and copy-and-paste configuration blocks. Nisbo wanted to connect several Site-to-Site locations and needed a repeatable checklist that did not omit an address, route, firewall rule or strongSwan setting. The original motivation was constructive laziness: do the careful work once instead of repeating the same error-prone steps on every server.
+S2S Manager started as my personal collection of notes and copy-and-paste configuration blocks. I wanted to connect several Site-to-Site locations and needed a repeatable checklist that did not omit an address, route, firewall rule or strongSwan setting. The original motivation was constructive laziness: do the careful work once instead of repeating the same error-prone steps on every server.
 
-As more tunnels and VPS systems were added, the documentation gradually became an interactive script. Real operational needs then added Debian peer bundles, reconnection handling, WireGuard, UFW, access checks, packet-filter diagnostics, server information and cron management. Features are developed around actual use cases and tested both locally and on real Debian servers.
+As I added more tunnels and VPS systems, the documentation gradually became an interactive script. Real operational needs then led to Debian peer bundles, reconnection handling, WireGuard, UFW, access checks, packet-filter diagnostics, server information and cron management. I develop features around actual use cases and test them both locally and on real Debian servers.
 
-The project has been designed and developed iteratively by Nisbo in collaboration with OpenAI's ChatGPT and Codex. Nisbo defines the requirements, tests behavior on the target systems and decides how the tool should work; the AI assists with analysis, implementation, automated tests and documentation. This is stated openly because the development history is part of the project, and AI assistance does not replace review or real-system testing for networking and firewall changes.
+I have designed and developed the project iteratively in collaboration with OpenAI's ChatGPT and Codex. I define the requirements, test behavior on the target systems and decide how the tool should work; the AI assists me with analysis, implementation, automated tests and documentation. I state this openly because it is part of the project's development history, and AI assistance does not replace review or real-system testing for networking and firewall changes.
 
 ## What it manages
 
@@ -181,7 +181,7 @@ Saved manager state and installed system configurations remain under `/root/s2s-
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.5.10                         ║
+║                       Version 1.5.11                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 State directory: /root/s2s-manager
