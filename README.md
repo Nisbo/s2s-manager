@@ -167,7 +167,7 @@ Important managed paths include:
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.5.6                          ║
+║                       Version 1.5.7                          ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ──────────────────────────────────────────────────────────────
@@ -192,7 +192,7 @@ Important managed paths include:
   [12] Delete tunnel completely                [14] Take over imported tunnel
                                                 [15] Show Take Over backups
 
-  EXPORT / TRANSFER                            SYSTEM / VPN / FIREWALL
+  EXPORT / TRANSFER                            SYSTEM / VPN / UFW / IPTABLES / CRON
   ─────────────────────────────────────────    ────────────────────────────────────────
   [16] Tunnel backup / restore                 [20] Show system status
   [17] Create Debian peer bundle               [21] WireGuard

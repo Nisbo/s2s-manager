@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.5.6"
+VERSION="1.5.7"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -12015,7 +12015,7 @@ cron_print_inventory() {
             printf '     %-12s %s\n' "Readable:" "${readable}"
         fi
         printf '     %-12s %s\n' "Source:" "${CRON_JOB_SOURCE_LABEL[$i]}"
-        printf '     %-12s %s\n' "Command:" "${CRON_JOB_COMMAND[$i]}"
+        printf '     %-12s %b%s%b\n' "Command:" "${C_BOLD}${C_CYAN}" "${CRON_JOB_COMMAND[$i]}" "${C_RESET}"
         if [[ "${CRON_JOB_READABLE_MATCH[$i]:-na}" == "no" ]]; then
             warn "Stored S2S-READABLE differs from the calculated schedule; editing or toggling regenerates it."
         fi
@@ -12709,7 +12709,7 @@ main_menu() {
 
         render_menu_pair \
             "EXPORT / TRANSFER" "${C_GREEN}" menu_export \
-            "SYSTEM / VPN / FIREWALL" "${C_CYAN}" menu_system
+            "SYSTEM / VPN / UFW / IPTABLES / CRON" "${C_CYAN}" menu_system
 
         echo
         echo "  [E] Exit"

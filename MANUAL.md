@@ -88,7 +88,7 @@ The main menu starts with a compact local server identity block. It shows the ho
   [12] Delete tunnel completely                [14] Take over imported tunnel
                                                 [15] Show Take Over backups
 
-  EXPORT / TRANSFER                            SYSTEM / VPN / FIREWALL
+  EXPORT / TRANSFER                            SYSTEM / VPN / UFW / IPTABLES / CRON
   [16] Tunnel backup / restore                 [20] Show system status
   [17] Create Debian peer bundle               [21] WireGuard
   [18] Transfer Debian peer bundle via SCP
