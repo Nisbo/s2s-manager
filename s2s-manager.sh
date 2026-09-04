@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.5.1"
+VERSION="1.5.2"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -11938,12 +11938,17 @@ cron_print_inventory() {
             "${CRON_JOB_USER[$i]}" "${CRON_JOB_SCHEDULE[$i]}" "${CRON_JOB_NAME[$i]}"
         if [[ "${human}" == "1" ]]; then
             readable="$(cron_schedule_readable "${CRON_JOB_SCHEDULE[$i]}")"
-            printf '     %-10s %-10s %-16s %-18s %s\n' "" "" "" "Readable:" "${readable}"
+            printf '     %-12s %s\n' "Readable:" "${readable}"
         fi
-        printf '     Source: %s\n' "${CRON_JOB_SOURCE_LABEL[$i]}"
-        printf '     Command: %s\n' "${CRON_JOB_COMMAND[$i]}"
+        printf '     %-12s %s\n' "Source:" "${CRON_JOB_SOURCE_LABEL[$i]}"
+        printf '     %-12s %s\n' "Command:" "${CRON_JOB_COMMAND[$i]}"
         if [[ "${CRON_JOB_READABLE_MATCH[$i]:-na}" == "no" ]]; then
             warn "Stored S2S-READABLE differs from the calculated schedule; editing or toggling regenerates it."
+        fi
+        if (( i < CRON_JOB_COUNT )); then
+            printf '%b     ' "${C_DIM}"
+            table_divider_segment 110
+            printf '%b\n' "${C_RESET}"
         fi
     done
     if (( CRON_MALFORMED_COUNT > 0 )); then
