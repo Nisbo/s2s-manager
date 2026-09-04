@@ -6,6 +6,8 @@ The project is intended for administrators who want guided, reviewable changes w
 
 > All addresses and names in this documentation are fictional examples. The real interface uses terminal colors; code blocks on GitHub are plain text.
 
+![S2S Manager main screen with simulated server and tunnel data](docs/images/main-menu.png)
+
 ## Contents
 
 - [Why S2S Manager?](#why-s2s-manager)
@@ -15,7 +17,6 @@ The project is intended for administrators who want guided, reviewable changes w
 - [Requirements](#requirements)
 - [Install](#install)
 - [Update](#update)
-- [Main screen](#main-screen)
 - [Quick start](#quick-start)
 - [State, configuration and backups](#state-configuration-and-backups)
 - [Important limitations](#important-limitations)
@@ -175,45 +176,6 @@ chmod +x s2s-manager.sh
 ```
 
 Saved manager state and installed system configurations remain under `/root/s2s-manager/` and the listed system paths. Running a newer script does not remove them. Review the version shown in the banner after updating.
-
-## Main screen
-
-```text
-╔══════════════════════════════════════════════════════════════╗
-║                      IPsec S2S Manager                       ║
-║                       Version 1.5.14                         ║
-╚══════════════════════════════════════════════════════════════╝
-
-State directory: /root/s2s-manager
-Server hostname:  vps-example
-Primary IPv4:     198.51.100.10
-
-TUNNEL CONFIGURATION                         TUNNEL OPERATIONS
-────────────────────────────────────────     ────────────────────────────────────────
-[1] Show tunnel configuration                [7] Install tunnel on Debian
-[2] Add S2S tunnel                           [8] Re-apply tunnel configuration
-[3] Add remote network to tunnel             [9] Reconnect tunnel
-[4] Remove remote network from tunnel        [10] Tunnel diagnostics
-[5] Show UniFi configuration
-[6] Rename tunnel display name
-
-REMOVE / DELETE                              IMPORT / TAKE OVER
-────────────────────────────────────────     ────────────────────────────────────────
-[11] Uninstall tunnel from Debian            [13] Discover / import existing tunnels
-[12] Delete tunnel completely                [14] Take over imported tunnel
-                                             [15] Show Take Over backups
-
-EXPORT / TRANSFER                            SYSTEM / VPN / UFW / IPTABLES / CRON
-────────────────────────────────────────     ────────────────────────────────────────
-[16] Tunnel backup / restore                 [20] Show system status
-[17] Create Debian peer bundle               [21] WireGuard
-[18] Transfer Debian peer bundle via SCP     [22] UFW
-[19] Import Debian peer bundle               [23] Access Check (read-only)
-                                             [24] IPTABLES / Packet Filter (read-only)
-                                             [25] Cron / Scheduled Tasks
-
-[E] Exit
-```
 
 ## Quick start
 
