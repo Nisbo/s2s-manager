@@ -6,6 +6,20 @@ The project is intended for administrators who want guided, reviewable changes w
 
 > All addresses and names in this documentation are fictional examples. The real interface uses terminal colors; code blocks on GitHub are plain text.
 
+## Contents
+
+- [What it manages](#what-it-manages)
+- [Highlights](#highlights)
+- [Safety model](#safety-model)
+- [Requirements](#requirements)
+- [Install](#install)
+- [Update](#update)
+- [Main screen](#main-screen)
+- [Quick start](#quick-start)
+- [State, configuration and backups](#state-configuration-and-backups)
+- [Important limitations](#important-limitations)
+- [Documentation](#documentation)
+
 ## What it manages
 
 | Area | Main-menu entry | Capabilities |
@@ -31,14 +45,15 @@ The project is intended for administrators who want guided, reviewable changes w
 - Persistent reconnection attempts for Debian peers after provider outages
 - Install, uninstall, re-apply, reconnect and detailed diagnostics
 - Discovery and read-only import before controlled take-over
-- Timestamped backups, restore, peer bundles and SCP transfer
+- Take-over backups under `/root/s2s-manager/backups/`
+- Portable tunnel backups and peer bundles under `/root/s2s-manager/exports/`
 - Generated UniFi configuration reference
 
 ### WireGuard remote access
 
 - New full-tunnel IPv4 server or discovery of existing configurations
 - Read-only import followed by explicit migration/take-over
-- Backup and automatic rollback when a migrated configuration cannot start
+- Backups under `/root/s2s-manager/wireguard/backups/` and automatic rollback when migration fails
 - Add, rename and remove clients while preserving active peer state
 - Generated client configuration and optional QR-code display
 - Change the managed `/24` VPN network while preserving keys and client host numbers
@@ -76,7 +91,7 @@ The project is intended for administrators who want guided, reviewable changes w
 - Add, take over, edit, enable/disable, run and delete managed jobs
 - Change the execution user, including guarded user-to-user migration
 - Preserve unrelated jobs, variables and comments in their original source
-- Back up every affected source and abort after concurrent external changes
+- Back up every affected source under `/root/s2s-manager/cron/backups/` and abort after concurrent external changes
 - Diagnose the cron service, users, commands, permissions and recent journal entries
 
 ## Safety model
@@ -86,7 +101,9 @@ The manager runs as root because it configures system networking and services. I
 - Status and inventory screens do not rewrite tunnel, firewall or cron-job configuration.
 - Destructive or connectivity-sensitive operations show a preview and require confirmation.
 - Existing IPsec, WireGuard and cron configurations are imported read-only first.
-- Take-over and migration create timestamped backups.
+- IPsec take-over creates timestamped backups under `/root/s2s-manager/backups/`.
+- WireGuard migration creates backups under `/root/s2s-manager/wireguard/backups/`.
+- Cron changes create source backups under `/root/s2s-manager/cron/backups/`.
 - WireGuard migration attempts automatic rollback after a failed start.
 - Cron writes compare the selected source with its current hash to avoid overwriting parallel edits.
 - UFW activation is refused without a suitable SSH safety rule.
@@ -110,44 +127,32 @@ UFW, WireGuard, QR generation and cron support are optional until their correspo
 
 ## Install
 
-Download the current script from GitHub:
+Log in as root (or open a root shell with `sudo -i`) and run the current script directly from GitHub:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Nisbo/s2s-manager/main/s2s-manager.sh -o s2s-manager.sh.new
-bash -n s2s-manager.sh.new
-install -m 0755 s2s-manager.sh.new s2s-manager.sh
-rm -f s2s-manager.sh.new
-sudo ./s2s-manager.sh
+bash <(curl -fsSL "https://raw.githubusercontent.com/Nisbo/s2s-manager/main/s2s-manager.sh?nocache=$(date +%s)")
 ```
 
-When already logged in as root:
+The cache-busting timestamp requests the current GitHub version. The script runs for this session; it is not copied to `/usr/local/bin` and no separate manager package is installed. Feature-specific Debian packages are offered only when required and always with a confirmation.
 
-```bash
-./s2s-manager.sh
-```
-
-For security-sensitive environments, inspect the downloaded script before executing it as root.
+For security-sensitive environments, inspect the repository version before executing it as root.
 
 ## Update
 
-The manager is a standalone script. Replace it with the current version and start it again:
+Run the same cache-free command again. The newly downloaded version is used immediately:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Nisbo/s2s-manager/main/s2s-manager.sh -o s2s-manager.sh.new
-bash -n s2s-manager.sh.new
-install -m 0755 s2s-manager.sh.new s2s-manager.sh
-rm -f s2s-manager.sh.new
-sudo ./s2s-manager.sh
+bash <(curl -fsSL "https://raw.githubusercontent.com/Nisbo/s2s-manager/main/s2s-manager.sh?nocache=$(date +%s)")
 ```
 
-Saved manager state and installed system configurations are not removed by replacing the script. Review the version shown in the banner after updating.
+Saved manager state and installed system configurations remain under `/root/s2s-manager/` and the listed system paths. Running a newer script does not remove them. Review the version shown in the banner after updating.
 
 ## Main screen
 
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.5.8                          ║
+║                       Version 1.5.9                          ║
 ╚══════════════════════════════════════════════════════════════╝
 
 State directory: /root/s2s-manager
@@ -167,7 +172,7 @@ REMOVE / DELETE                              IMPORT / TAKE OVER
 ────────────────────────────────────────     ────────────────────────────────────────
 [11] Uninstall tunnel from Debian            [13] Discover / import existing tunnels
 [12] Delete tunnel completely                [14] Take over imported tunnel
-                                              [15] Show Take Over backups
+                                             [15] Show Take Over backups
 
 EXPORT / TRANSFER                            SYSTEM / VPN / UFW / IPTABLES / CRON
 ────────────────────────────────────────     ────────────────────────────────────────
@@ -175,8 +180,8 @@ EXPORT / TRANSFER                            SYSTEM / VPN / UFW / IPTABLES / CRO
 [17] Create Debian peer bundle               [21] WireGuard
 [18] Transfer Debian peer bundle via SCP     [22] UFW
 [19] Import Debian peer bundle               [23] Access Check (read-only)
-                                              [24] IPTABLES / Packet Filter (read-only)
-                                              [25] Cron / Scheduled Tasks
+                                             [24] IPTABLES / Packet Filter (read-only)
+                                             [25] Cron / Scheduled Tasks
 
 [E] Exit
 ```
@@ -239,7 +244,10 @@ Important paths include:
 ```text
 /root/s2s-manager/tunnels/
 /root/s2s-manager/backups/
+/root/s2s-manager/exports/
 /root/s2s-manager/wireguard/
+/root/s2s-manager/wireguard/backups/
+/root/s2s-manager/wireguard/exports/
 /root/s2s-manager/cron/backups/
 /etc/swanctl/conf.d/s2s-manager-<tunnel>.conf
 /usr/local/sbin/s2s-manager-vti-<tunnel>.sh
@@ -247,7 +255,18 @@ Important paths include:
 /etc/wireguard/wg0.conf
 ```
 
-Peer bundles, tunnel backups, WireGuard client exports and QR codes may contain PSKs or private keys. Treat them like passwords and never publish them.
+Backup locations by operation:
+
+| Data | Location |
+|---|---|
+| IPsec take-over safety backups | `/root/s2s-manager/backups/` |
+| Portable IPsec tunnel backups | `/root/s2s-manager/exports/*.s2s-backup.tar.gz` |
+| Debian peer bundles | `/root/s2s-manager/exports/*.s2s-peer` |
+| WireGuard migration/network-change backups | `/root/s2s-manager/wireguard/backups/` |
+| Generated WireGuard client files | `/root/s2s-manager/wireguard/exports/` |
+| Cron source backups | `/root/s2s-manager/cron/backups/` |
+
+Safety backups are retained until they are removed manually. Peer bundles, tunnel backups, WireGuard client exports and QR codes may contain PSKs or private keys. Treat them like passwords and never publish them.
 
 ## Important limitations
 
