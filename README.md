@@ -274,7 +274,7 @@ Safety backups are retained until they are removed manually. Peer bundles, tunne
 
 ## Documentation
 
-Use the [S2S Manager Wiki](https://github.com/Nisbo/s2s-manager/wiki) as the navigable, detailed documentation. The repository's [MANUAL.md](MANUAL.md) remains available as a single-file/offline reference.
+Use the [S2S Manager Wiki](https://github.com/Nisbo/s2s-manager/wiki) as the complete and actively maintained documentation. The repository's [MANUAL.md](MANUAL.md) is intentionally a short compatibility pointer so existing links continue to work without maintaining a second, potentially outdated manual.
 
 ## License
 
