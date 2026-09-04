@@ -95,6 +95,7 @@ The main menu starts with a compact local server identity block. It shows the ho
   [19] Import Debian peer bundle               [22] UFW
                                                 [23] Access Check (read-only)
                                                 [24] IPTABLES / Packet Filter (read-only)
+                                                [25] Cron / Scheduled Tasks
 ```
 
 ---
@@ -172,6 +173,9 @@ Analyses a selected source-to-destination path using live interface, forwarding,
 
 ## [24] IPTABLES / Packet Filter (read-only)
 Shows the live IPv4 filter and NAT state, default policies, counters, Docker chains, published ports and VPN-related rules. Its guided path analysis detects exact DNAT mappings and distinguishes local INPUT traffic from routed or container-bound FORWARD traffic. It never creates, deletes, flushes or changes rules.
+
+## [25] Cron / Scheduled Tasks
+Inventories and manages regular entries from user crontabs, `/etc/crontab` and existing `/etc/cron.d/*` files. Periodic directory scripts are displayed separately. Unmanaged jobs require explicit takeover before editing, status changes, manual execution or deletion. Every write is backed up and protected against concurrent external changes.
 
 ---
 
@@ -519,7 +523,43 @@ Collecting the overview can take a few seconds when UFW, Docker or many rules ar
 
 ---
 
-# 12. Backup and restore
+# 12. Cron / scheduled tasks
+
+The **[25] Cron / Scheduled Tasks** menu reads every installed user crontab visible under Debian's cron spool, plus `/etc/crontab` and readable files in `/etc/cron.d/`. Executable files in `/etc/cron.hourly`, `cron.daily`, `cron.weekly` and `cron.monthly` appear in a separate informational list because they are scripts rather than normal five-field job lines.
+
+The overview classifies entries as `S2S`, `NO` or `POSSIBLE`. `S2S` is a contiguous managed metadata block. `NO` is an active external job. `POSSIBLE` is currently a comment whose content becomes a syntactically plausible job after removing one comment prefix. Prose such as `# Disabled because of maintenance` is not classified as a job. Taking over a possible entry requires confirmation and keeps it disabled.
+
+Managed blocks use this stable format:
+
+```cron
+# S2S-JOB: Database backup
+# S2S-ENABLED: yes
+# S2S-READABLE: Every day at 03:30
+30 3 * * * /usr/local/bin/backup-db
+```
+
+A disabled block stores its command unambiguously:
+
+```cron
+# S2S-JOB: Database backup
+# S2S-ENABLED: no
+# S2S-READABLE: Every day at 03:30
+# S2S-DISABLED: 30 3 * * * /usr/local/bin/backup-db
+```
+
+The actual cron expression is authoritative. `S2S-READABLE` is generated for people; a mismatch caused by manual editing is displayed and corrected by the next manager edit or enable/disable operation. The `[H]` menu option controls whether calculated descriptions appear in the overview.
+
+The first write to each source inserts an explanatory header containing the exact marker `# S2S-MANAGER-CRON-FILE: 1`. Detection depends only on that exact line, not the complete explanatory text. A duplicate, damaged or unsupported marker blocks writing. Manual jobs, environment variables and comments may remain anywhere outside a contiguous S2S block; the manager does not reorder them.
+
+New jobs default to root but can target another existing user. Editing a system-format entry changes its user field. Moving a managed per-user job installs the target copy first, removes the original second and restores the target on failure. Commands are real shell commands and can have broad privileges; every wizard shows the exact command and user before writing. Manual execution requires typing `RUN`, refuses commands with unescaped cron `%` semantics and notes that it cannot reproduce every cron environment detail.
+
+Before every write, the complete source is copied to `/root/s2s-manager/cron/backups/`. The source is read again and compared with the selected version; if it changed through `crontab -e` or another process, the operation stops without overwriting it. Files owned by Debian packages produce an additional update-conflict warning. Malformed S2S blocks also block writes to their source until manually reviewed or restored.
+
+Diagnostics report whether `crontab` exists, whether `cron.service` is active and enabled, malformed metadata counts and recent journal entries. If cron is missing, installation is offered explicitly and requires typing `INSTALL CRON`; it installs the Debian package and enables/starts the service.
+
+---
+
+# 13. Backup and restore
 
 IPsec tunnel backups are available through **[16]**. WireGuard migration backups are stored separately under:
 
@@ -531,7 +571,7 @@ Backups and exports can contain PSKs/private keys. Protect them accordingly.
 
 ---
 
-# 13. Troubleshooting
+# 14. Troubleshooting
 
 ## IPsec tunnel is DEFINED but not connected
 A definition is not installed. Use **[7] Install tunnel on Debian**.
@@ -570,7 +610,7 @@ The manager creates a backup immediately before migration and automatically atte
 
 ---
 
-# 14. Security notes
+# 15. Security notes
 
 - Never publish PSKs, WireGuard private keys, client exports or QR codes.
 - WireGuard **public keys** are not secret; private keys and PSKs are.

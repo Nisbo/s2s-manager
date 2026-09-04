@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.4.3
+# Version 1.5.0
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.4.3"
+VERSION="1.5.0"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -69,6 +69,10 @@ WG_DNS_DEFAULT="1.1.1.1"
 UFW_STATE_DIR="${STATE_DIR}/firewall"
 UFW_TEMP_DIR="${UFW_STATE_DIR}/temporary"
 UFW_TIMER_PREFIX="s2s-manager-ufw-temp"
+
+CRON_STATE_DIR="${STATE_DIR}/cron"
+CRON_BACKUP_DIR="${CRON_STATE_DIR}/backups"
+CRON_HEADER_MARKER="# S2S-MANAGER-CRON-FILE: 1"
 
 SWANCTL_DIR="/etc/swanctl/conf.d"
 MANAGED_PREFIX="s2s-manager"
@@ -372,10 +376,10 @@ ensure_root() {
 init_state_dirs() {
     mkdir -p "${TUNNEL_DIR}" "${ROUTE_DIR}" "${SECRET_DIR}" "${BACKUP_DIR}" "${EXPORT_DIR}" \
         "${WG_DIR}" "${WG_CLIENT_DIR}" "${WG_CLIENT_EXPORT_DIR}" "${WG_BACKUP_DIR}" \
-        "${UFW_STATE_DIR}" "${UFW_TEMP_DIR}"
+        "${UFW_STATE_DIR}" "${UFW_TEMP_DIR}" "${CRON_STATE_DIR}" "${CRON_BACKUP_DIR}"
     chmod 700 "${STATE_DIR}" "${TUNNEL_DIR}" "${ROUTE_DIR}" "${SECRET_DIR}" "${BACKUP_DIR}" "${EXPORT_DIR}" \
         "${WG_DIR}" "${WG_CLIENT_DIR}" "${WG_CLIENT_EXPORT_DIR}" "${WG_BACKUP_DIR}" \
-        "${UFW_STATE_DIR}" "${UFW_TEMP_DIR}"
+        "${UFW_STATE_DIR}" "${UFW_TEMP_DIR}" "${CRON_STATE_DIR}" "${CRON_BACKUP_DIR}"
 }
 
 debian_major_version() {
@@ -11612,6 +11616,917 @@ EOF
 
 # End read-only iptables / packet-filter diagnostics
 
+# ==============================================================================
+# Cron / scheduled-task management
+# ==============================================================================
+
+CRON_JOB_COUNT=0
+CRON_MALFORMED_COUNT=0
+CRON_HUMAN_READABLE=1
+CRON_JOB_SOURCE=()
+CRON_JOB_SOURCE_LABEL=()
+CRON_JOB_SOURCE_HASH=()
+CRON_JOB_START=()
+CRON_JOB_END=()
+CRON_JOB_MANAGED=()
+CRON_JOB_STATUS=()
+CRON_JOB_NAME=()
+CRON_JOB_SCHEDULE=()
+CRON_JOB_USER=()
+CRON_JOB_COMMAND=()
+CRON_JOB_RAW=()
+CRON_JOB_READABLE_MATCH=()
+CRON_MALFORMED_SOURCE_LIST=""
+CRON_SOURCE_ERROR_COUNT=0
+
+cron_command_available() {
+    command_available crontab
+}
+
+cron_source_is_system() {
+    [[ "$1" != user:* ]]
+}
+
+cron_source_label() {
+    local source="$1"
+    case "${source}" in
+        user:*) printf '%s crontab' "${source#user:}" ;;
+        file:/etc/crontab) printf '/etc/crontab' ;;
+        file:*) printf '%s' "${source#file:}" ;;
+    esac
+}
+
+cron_list_sources() {
+    local file user
+    printf 'user:root\n'
+    if [[ -d /var/spool/cron/crontabs ]]; then
+        for file in /var/spool/cron/crontabs/*; do
+            [[ -f "${file}" ]] || continue
+            user="$(basename "${file}")"
+            [[ "${user}" == "root" ]] && continue
+            id "${user}" >/dev/null 2>&1 && printf 'user:%s\n' "${user}"
+        done
+    fi
+    [[ -r /etc/crontab ]] && printf 'file:/etc/crontab\n'
+    if [[ -d /etc/cron.d ]]; then
+        for file in /etc/cron.d/*; do
+            [[ -f "${file}" && -r "${file}" ]] || continue
+            [[ "$(basename "${file}")" =~ ^[A-Za-z0-9_-]+$ ]] || continue
+            printf 'file:%s\n' "${file}"
+        done
+    fi
+}
+
+cron_read_source_to_file() {
+    local source="$1" destination="$2" user path spool
+    case "${source}" in
+        user:*)
+            user="${source#user:}"
+            spool="/var/spool/cron/crontabs/${user}"
+            if cron_command_available; then
+                if crontab -u "${user}" -l > "${destination}" 2>/dev/null; then
+                    return 0
+                fi
+                [[ ! -f "${spool}" ]] || return 1
+            elif [[ -f "${spool}" && -r "${spool}" ]]; then
+                cp -- "${spool}" "${destination}"
+                return
+            fi
+            : > "${destination}"
+            return 0
+            ;;
+        file:*)
+            path="${source#file:}"
+            [[ -f "${path}" ]] || return 1
+            cp -- "${path}" "${destination}"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+cron_file_hash() {
+    cksum "$1" 2>/dev/null | awk '{print $1 ":" $2}'
+}
+
+cron_valid_field() {
+    local value="$1" position="${2:-1}" upper min max number normalized
+    upper="$(tr '[:lower:]' '[:upper:]' <<< "${value}")"
+    case "${position}" in
+        1) min=0; max=59; normalized="${upper}" ;;
+        2) min=0; max=23; normalized="${upper}" ;;
+        3) min=1; max=31; normalized="${upper}" ;;
+        4)
+            min=1; max=12
+            normalized="${upper//JAN/1}"; normalized="${normalized//FEB/2}"; normalized="${normalized//MAR/3}"
+            normalized="${normalized//APR/4}"; normalized="${normalized//MAY/5}"; normalized="${normalized//JUN/6}"
+            normalized="${normalized//JUL/7}"; normalized="${normalized//AUG/8}"; normalized="${normalized//SEP/9}"
+            normalized="${normalized//OCT/10}"; normalized="${normalized//NOV/11}"; normalized="${normalized//DEC/12}"
+            ;;
+        5)
+            min=0; max=7
+            normalized="${upper//SUN/0}"; normalized="${normalized//MON/1}"; normalized="${normalized//TUE/2}"
+            normalized="${normalized//WED/3}"; normalized="${normalized//THU/4}"; normalized="${normalized//FRI/5}"
+            normalized="${normalized//SAT/6}"
+            ;;
+        *) return 1 ;;
+    esac
+    [[ "${normalized}" =~ ^[0-9*/,_-]+$ ]] || return 1
+    [[ ! "${normalized}" =~ /0([^0-9]|$) ]] || return 1
+    while read -r number; do
+        [[ -n "${number}" ]] || continue
+        (( 10#${number} >= min && 10#${number} <= max )) || return 1
+    done < <(tr -cs '0-9' '\n' <<< "${normalized}")
+    return 0
+}
+
+cron_parse_entry() {
+    local line="$1" system_format="$2" f1 f2 f3 f4 f5 user command schedule
+    CRON_PARSED_SCHEDULE=""
+    CRON_PARSED_USER=""
+    CRON_PARSED_COMMAND=""
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -n "${line}" && "${line}" != \#* ]] || return 1
+    [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && return 1
+
+    if [[ "${line}" == @* ]]; then
+        if [[ "${system_format}" == "1" ]]; then
+            read -r schedule user command <<< "${line}"
+            [[ -n "${schedule}" && -n "${user}" && -n "${command}" ]] || return 1
+        else
+            read -r schedule command <<< "${line}"
+            [[ -n "${schedule}" && -n "${command}" ]] || return 1
+        fi
+        case "${schedule}" in
+            @reboot|@yearly|@annually|@monthly|@weekly|@daily|@midnight|@hourly) ;;
+            *) return 1 ;;
+        esac
+    else
+        if [[ "${system_format}" == "1" ]]; then
+            read -r f1 f2 f3 f4 f5 user command <<< "${line}"
+            [[ -n "${f5}" && -n "${user}" && -n "${command}" ]] || return 1
+        else
+            read -r f1 f2 f3 f4 f5 command <<< "${line}"
+            [[ -n "${f5}" && -n "${command}" ]] || return 1
+        fi
+        cron_valid_field "${f1}" 1 && cron_valid_field "${f2}" 2 && cron_valid_field "${f3}" 3 && \
+            cron_valid_field "${f4}" 4 && cron_valid_field "${f5}" 5 || return 1
+        schedule="${f1} ${f2} ${f3} ${f4} ${f5}"
+    fi
+
+    CRON_PARSED_SCHEDULE="${schedule}"
+    CRON_PARSED_USER="${user:-}"
+    CRON_PARSED_COMMAND="${command}"
+}
+
+cron_schedule_readable() {
+    local schedule="$1" minute hour dom month dow n
+    case "${schedule}" in
+        @reboot) printf 'At system startup'; return ;;
+        @yearly|@annually) printf 'Every year'; return ;;
+        @monthly) printf 'Every month'; return ;;
+        @weekly) printf 'Every week'; return ;;
+        @daily|@midnight) printf 'Every day'; return ;;
+        @hourly) printf 'Every hour'; return ;;
+    esac
+    read -r minute hour dom month dow <<< "${schedule}"
+    if [[ "${minute}" =~ ^\*/([0-9]+)$ && "${hour} ${dom} ${month} ${dow}" == "* * * *" ]]; then
+        n="${BASH_REMATCH[1]}"; printf 'Every %s minutes' "${n}"; return
+    fi
+    if [[ "${minute}" =~ ^[0-9]+$ && "${hour} ${dom} ${month} ${dow}" == "* * * *" ]]; then
+        printf 'Every hour at minute %02d' "$((10#${minute}))"; return
+    fi
+    if [[ "${minute}" =~ ^[0-9]+$ && "${hour}" =~ ^[0-9]+$ && "${dom} ${month} ${dow}" == "* * *" ]]; then
+        printf 'Every day at %02d:%02d' "$((10#${hour}))" "$((10#${minute}))"; return
+    fi
+    if [[ "${minute}" =~ ^[0-9]+$ && "${hour}" =~ ^[0-9]+$ && "${dom} ${month}" == "* *" && "${dow}" != "*" ]]; then
+        printf 'On weekday(s) %s at %02d:%02d' "${dow}" "$((10#${hour}))" "$((10#${minute}))"; return
+    fi
+    if [[ "${minute}" =~ ^[0-9]+$ && "${hour}" =~ ^[0-9]+$ && "${dom}" =~ ^[0-9]+$ && "${month} ${dow}" == "* *" ]]; then
+        printf 'Every month on day %s at %02d:%02d' "${dom}" "$((10#${hour}))" "$((10#${minute}))"; return
+    fi
+    printf 'Custom schedule: %s' "${schedule}"
+}
+
+cron_add_inventory_job() {
+    CRON_JOB_COUNT=$((CRON_JOB_COUNT + 1))
+    CRON_JOB_SOURCE[${CRON_JOB_COUNT}]="$1"
+    CRON_JOB_SOURCE_LABEL[${CRON_JOB_COUNT}]="$2"
+    CRON_JOB_SOURCE_HASH[${CRON_JOB_COUNT}]="$3"
+    CRON_JOB_START[${CRON_JOB_COUNT}]="$4"
+    CRON_JOB_END[${CRON_JOB_COUNT}]="$5"
+    CRON_JOB_MANAGED[${CRON_JOB_COUNT}]="$6"
+    CRON_JOB_STATUS[${CRON_JOB_COUNT}]="$7"
+    CRON_JOB_NAME[${CRON_JOB_COUNT}]="$8"
+    CRON_JOB_SCHEDULE[${CRON_JOB_COUNT}]="$9"
+    shift 9
+    CRON_JOB_USER[${CRON_JOB_COUNT}]="$1"
+    CRON_JOB_COMMAND[${CRON_JOB_COUNT}]="$2"
+    CRON_JOB_RAW[${CRON_JOB_COUNT}]="$3"
+}
+
+cron_inventory_source() {
+    local source="$1" file="$2" hash="$3" source_label system_format=0 source_user=""
+    local line candidate enabled readable job_name raw schedule command job_user
+    local i=1 total=0 malformed_before="${CRON_MALFORMED_COUNT}"
+    local -a lines=()
+    source_label="$(cron_source_label "${source}")"
+    cron_source_is_system "${source}" && system_format=1 || source_user="${source#user:}"
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        total=$((total + 1)); lines[${total}]="${line}"
+    done < "${file}"
+
+    while (( i <= total )); do
+        line="${lines[$i]}"
+        if [[ "${line}" == "# S2S-JOB:"* ]]; then
+            job_name="${line#\# S2S-JOB: }"
+            enabled="${lines[$((i + 1))]:-}"
+            readable="${lines[$((i + 2))]:-}"
+            raw="${lines[$((i + 3))]:-}"
+            if [[ "${enabled}" != "# S2S-ENABLED: yes" && "${enabled}" != "# S2S-ENABLED: no" ]] || \
+               [[ "${readable}" != "# S2S-READABLE:"* ]]; then
+                CRON_MALFORMED_COUNT=$((CRON_MALFORMED_COUNT + 1)); i=$((i + 1)); continue
+            fi
+            if [[ "${enabled}" == "# S2S-ENABLED: no" ]]; then
+                [[ "${raw}" == "# S2S-DISABLED:"* ]] || { CRON_MALFORMED_COUNT=$((CRON_MALFORMED_COUNT + 1)); i=$((i + 4)); continue; }
+                candidate="${raw#\# S2S-DISABLED: }"
+            else
+                candidate="${raw}"
+            fi
+            if ! cron_parse_entry "${candidate}" "${system_format}"; then
+                CRON_MALFORMED_COUNT=$((CRON_MALFORMED_COUNT + 1)); i=$((i + 4)); continue
+            fi
+            schedule="${CRON_PARSED_SCHEDULE}"; command="${CRON_PARSED_COMMAND}"
+            job_user="${CRON_PARSED_USER:-${source_user}}"
+            cron_add_inventory_job "${source}" "${source_label}" "${hash}" "${i}" "$((i + 3))" yes \
+                "$([[ "${enabled}" == *yes ]] && echo ENABLED || echo DISABLED)" "${job_name:-Unnamed managed job}" \
+                "${schedule}" "${job_user}" "${command}" "${candidate}"
+            if [[ "${readable#\# S2S-READABLE: }" == "$(cron_schedule_readable "${schedule}")" ]]; then
+                CRON_JOB_READABLE_MATCH[${CRON_JOB_COUNT}]=yes
+            else
+                CRON_JOB_READABLE_MATCH[${CRON_JOB_COUNT}]=no
+            fi
+            i=$((i + 4)); continue
+        fi
+        if [[ "${line}" == "# S2S-"* ]]; then
+            case "${line}" in
+                "${CRON_HEADER_MARKER}"|'# S2S MANAGER CRON INTEGRATION') ;;
+                *) CRON_MALFORMED_COUNT=$((CRON_MALFORMED_COUNT + 1)) ;;
+            esac
+            i=$((i + 1)); continue
+        fi
+        if cron_parse_entry "${line}" "${system_format}"; then
+            schedule="${CRON_PARSED_SCHEDULE}"; command="${CRON_PARSED_COMMAND}"
+            job_user="${CRON_PARSED_USER:-${source_user}}"
+            cron_add_inventory_job "${source}" "${source_label}" "${hash}" "${i}" "${i}" no ENABLED \
+                "${command:0:42}" "${schedule}" "${job_user}" "${command}" "${line}"
+            CRON_JOB_READABLE_MATCH[${CRON_JOB_COUNT}]=na
+        elif [[ "${line}" =~ ^[[:space:]]*#[[:space:]]+(.+)$ ]]; then
+            candidate="${BASH_REMATCH[1]}"
+            if [[ "${candidate}" != S2S-* ]] && cron_parse_entry "${candidate}" "${system_format}"; then
+                schedule="${CRON_PARSED_SCHEDULE}"; command="${CRON_PARSED_COMMAND}"
+                job_user="${CRON_PARSED_USER:-${source_user}}"
+                cron_add_inventory_job "${source}" "${source_label}" "${hash}" "${i}" "${i}" possible DISABLED \
+                    "${command:0:42}" "${schedule}" "${job_user}" "${command}" "${candidate}"
+                CRON_JOB_READABLE_MATCH[${CRON_JOB_COUNT}]=na
+            fi
+        fi
+        i=$((i + 1))
+    done
+    if (( CRON_MALFORMED_COUNT > malformed_before )); then
+        CRON_MALFORMED_SOURCE_LIST+="|${source}|"
+    fi
+}
+
+cron_build_inventory() {
+    local source temp hash
+    CRON_JOB_COUNT=0; CRON_MALFORMED_COUNT=0; CRON_SOURCE_ERROR_COUNT=0
+    CRON_JOB_SOURCE=(); CRON_JOB_SOURCE_LABEL=(); CRON_JOB_SOURCE_HASH=()
+    CRON_JOB_START=(); CRON_JOB_END=(); CRON_JOB_MANAGED=(); CRON_JOB_STATUS=()
+    CRON_JOB_NAME=(); CRON_JOB_SCHEDULE=(); CRON_JOB_USER=(); CRON_JOB_COMMAND=(); CRON_JOB_RAW=(); CRON_JOB_READABLE_MATCH=()
+    CRON_MALFORMED_SOURCE_LIST=""
+    while IFS= read -r source; do
+        [[ -n "${source}" ]] || continue
+        temp="$(mktemp)" || return 1
+        if cron_read_source_to_file "${source}" "${temp}"; then
+            hash="$(cron_file_hash "${temp}")"
+            cron_inventory_source "${source}" "${temp}" "${hash}"
+        else
+            CRON_SOURCE_ERROR_COUNT=$((CRON_SOURCE_ERROR_COUNT + 1))
+        fi
+        rm -f -- "${temp}"
+    done < <(cron_list_sources)
+}
+
+cron_print_inventory() {
+    local human="${1:-1}" i managed_label readable
+    if (( CRON_JOB_COUNT == 0 )); then info "No regular cron jobs were found."; return; fi
+    printf '%-4s %-10s %-10s %-16s %-18s %s\n' "#" "Status" "Managed" "User" "Schedule" "Name / command"
+    printf '%-4s %-10s %-10s %-16s %-18s %s\n' "────" "──────────" "──────────" "────────────────" "──────────────────" "────────────────────────────────────────"
+    for ((i=1; i<=CRON_JOB_COUNT; i++)); do
+        case "${CRON_JOB_MANAGED[$i]}" in yes) managed_label="S2S" ;; possible) managed_label="POSSIBLE" ;; *) managed_label="NO" ;; esac
+        printf '%-4s %-10s %-10s %-16s %-18s %s\n' "${i}" "${CRON_JOB_STATUS[$i]}" "${managed_label}" \
+            "${CRON_JOB_USER[$i]}" "${CRON_JOB_SCHEDULE[$i]}" "${CRON_JOB_NAME[$i]}"
+        if [[ "${human}" == "1" ]]; then
+            readable="$(cron_schedule_readable "${CRON_JOB_SCHEDULE[$i]}")"
+            printf '     %-10s %-10s %-16s %-18s %s\n' "" "" "" "Readable:" "${readable}"
+        fi
+        printf '     Source: %s\n' "${CRON_JOB_SOURCE_LABEL[$i]}"
+        printf '     Command: %s\n' "${CRON_JOB_COMMAND[$i]}"
+        if [[ "${CRON_JOB_READABLE_MATCH[$i]:-na}" == "no" ]]; then
+            warn "Stored S2S-READABLE differs from the calculated schedule; editing or toggling regenerates it."
+        fi
+    done
+    if (( CRON_MALFORMED_COUNT > 0 )); then
+        echo; warn "${CRON_MALFORMED_COUNT} malformed or isolated S2S metadata line(s) were detected. Writing is blocked for affected selections."
+    fi
+    (( CRON_SOURCE_ERROR_COUNT == 0 )) || warn "${CRON_SOURCE_ERROR_COUNT} cron source(s) could not be read and were not included."
+}
+
+cron_header_text() {
+    cat <<'EOF'
+# ==============================================================================
+# S2S-MANAGER-CRON-FILE: 1
+# S2S MANAGER CRON INTEGRATION
+#
+# This crontab may contain metadata blocks managed by S2S Manager.
+# Manual jobs, variables and comments are allowed outside those blocks.
+# Do not change, reorder or separate lines beginning with "# S2S-" in a block.
+# Manual format changes inside a block may prevent correct detection.
+# ==============================================================================
+EOF
+}
+
+cron_prepare_header() {
+    local file="$1" exact similar temp
+    exact="$(grep -Fxc "${CRON_HEADER_MARKER}" "${file}" 2>/dev/null || true)"
+    similar="$(grep -Fc 'S2S-MANAGER-CRON-FILE:' "${file}" 2>/dev/null || true)"
+    if [[ "${exact}" == "1" && "${similar}" == "1" ]]; then return 0; fi
+    if [[ "${exact}" != "0" || "${similar}" != "0" ]]; then
+        error "The cron source contains a duplicated, unsupported or damaged S2S file marker."
+        return 1
+    fi
+    temp="$(mktemp)" || return 1
+    { cron_header_text; echo; cat "${file}"; } > "${temp}"
+    mv -- "${temp}" "${file}"
+}
+
+cron_backup_source() {
+    local source="$1" current="$2" safe timestamp backup
+    mkdir -p "${CRON_BACKUP_DIR}"
+    safe="$(cron_source_label "${source}" | tr '/ :' '___')"
+    timestamp="$(date +%Y%m%d-%H%M%S)-$$-${RANDOM}"
+    backup="${CRON_BACKUP_DIR}/${safe}-${timestamp}.bak"
+    cp -- "${current}" "${backup}" || return 1
+    chmod 600 "${backup}"
+    printf '%s' "${backup}"
+}
+
+cron_install_source_file() {
+    local source="$1" staged="$2" user path
+    case "${source}" in
+        user:*) user="${source#user:}"; crontab -u "${user}" "${staged}" ;;
+        file:*) path="${source#file:}"; cp -- "${staged}" "${path}" ;;
+        *) return 1 ;;
+    esac
+}
+
+cron_write_staged_source() {
+    local source="$1" expected_hash="$2" staged="$3" current backup current_hash
+    current="$(mktemp)" || return 1
+    if [[ "${CRON_MALFORMED_SOURCE_LIST}" == *"|${source}|"* ]]; then
+        error "This cron source contains malformed S2S metadata. No changes were written."
+        info "Review the affected S2S lines or restore a backup before changing this source."
+        rm -f -- "${current}"
+        return 1
+    fi
+    cron_read_source_to_file "${source}" "${current}" || { rm -f -- "${current}"; return 1; }
+    current_hash="$(cron_file_hash "${current}")"
+    if [[ "${current_hash}" != "${expected_hash}" ]]; then
+        rm -f -- "${current}"
+        error "The cron source changed outside S2S Manager. No changes were written."
+        info "Reload the job list and repeat the operation."
+        return 1
+    fi
+    cron_prepare_header "${staged}" || { rm -f -- "${current}"; return 1; }
+    backup="$(cron_backup_source "${source}" "${current}")" || { rm -f -- "${current}"; return 1; }
+    if cron_install_source_file "${source}" "${staged}"; then
+        CRON_LAST_BACKUP="${backup}"
+        rm -f -- "${current}"
+        return 0
+    fi
+    warn "Writing failed. Attempting to restore the original source."
+    cron_install_source_file "${source}" "${current}" >/dev/null 2>&1 || error "Automatic rollback failed; restore ${backup} manually."
+    rm -f -- "${current}"
+    return 1
+}
+
+cron_render_block() {
+    local name="$1" status="$2" schedule="$3" user="$4" command="$5" system_format="$6" entry
+    if [[ "${system_format}" == "1" ]]; then entry="${schedule} ${user} ${command}"; else entry="${schedule} ${command}"; fi
+    printf '# S2S-JOB: %s\n' "${name}"
+    printf '# S2S-ENABLED: %s\n' "$([[ "${status}" == "ENABLED" ]] && echo yes || echo no)"
+    printf '# S2S-READABLE: %s\n' "$(cron_schedule_readable "${schedule}")"
+    if [[ "${status}" == "ENABLED" ]]; then printf '%s\n' "${entry}"; else printf '# S2S-DISABLED: %s\n' "${entry}"; fi
+}
+
+cron_replace_lines() {
+    local source="$1" expected="$2" start="$3" end="$4" replacement="$5"
+    local current staged
+    current="$(mktemp)" || return 1; staged="$(mktemp)" || { rm -f -- "${current}"; return 1; }
+    cron_read_source_to_file "${source}" "${current}" || { rm -f -- "${current}" "${staged}"; return 1; }
+    awk -v first="${start}" -v last="${end}" -v repl="${replacement}" '
+        NR==first { while ((getline line < repl)>0) print line }
+        NR<first || NR>last { print }
+    ' "${current}" > "${staged}"
+    cron_write_staged_source "${source}" "${expected}" "${staged}"
+    local rc=$?; rm -f -- "${current}" "${staged}"; return "${rc}"
+}
+
+cron_append_block() {
+    local source="$1" expected="$2" block="$3" current staged
+    current="$(mktemp)" || return 1; staged="$(mktemp)" || { rm -f -- "${current}"; return 1; }
+    cron_read_source_to_file "${source}" "${current}" || { rm -f -- "${current}" "${staged}"; return 1; }
+    cp -- "${current}" "${staged}"
+    [[ ! -s "${staged}" ]] || echo >> "${staged}"
+    cat "${block}" >> "${staged}"
+    cron_write_staged_source "${source}" "${expected}" "${staged}"
+    local rc=$?; rm -f -- "${current}" "${staged}"; return "${rc}"
+}
+
+cron_select_job() {
+    local mode="$1" i choice shown=0
+    cron_build_inventory || return 1
+    echo
+    for ((i=1; i<=CRON_JOB_COUNT; i++)); do
+        case "${mode}:${CRON_JOB_MANAGED[$i]}" in
+            managed:yes|unmanaged:no|unmanaged:possible|all:*) ;;
+            *) continue ;;
+        esac
+        printf '  [%d] %-10s %-14s %-18s %s\n' "${i}" "${CRON_JOB_STATUS[$i]}" "${CRON_JOB_USER[$i]}" \
+            "${CRON_JOB_SCHEDULE[$i]}" "${CRON_JOB_NAME[$i]}"
+        printf '      Source: %s\n' "${CRON_JOB_SOURCE_LABEL[$i]}"
+        shown=$((shown + 1))
+    done
+    (( shown > 0 )) || { info "No matching cron jobs were found."; return 1; }
+    echo; echo "B = Back    E = Exit"; echo
+    read -r -p "Job number: " choice
+    case "${choice}" in b|B|0|"") return 1 ;; e|E) clear_screen; echo "Bye."; exit 0 ;; esac
+    [[ "${choice}" =~ ^[0-9]+$ ]] || return 1
+    (( choice >= 1 && choice <= CRON_JOB_COUNT )) || return 1
+    case "${mode}:${CRON_JOB_MANAGED[$choice]}" in managed:yes|unmanaged:no|unmanaged:possible|all:*) ;; *) return 1 ;; esac
+    CRON_SELECTED="${choice}"
+}
+
+cron_prompt_name() {
+    local default="${1:-}" value
+    echo "Enter a short descriptive name. It is stored only as a normal # S2S-JOB comment."
+    echo "B = back to Cron management    E = exit"
+    while :; do
+        read -r -p "Job name${default:+ [${default}]}: " value
+        case "${value}" in b|B) return 1 ;; e|E) clear_screen; echo "Bye."; exit 0 ;; esac
+        value="${value:-${default}}"
+        if [[ -n "${value}" && "${value}" =~ [^[:space:]] && ${#value} -le 64 && "${value}" != *$'\n'* && "${value}" != *$'\r'* && "${value}" != *$'\t'* ]]; then CRON_PROMPT_NAME="${value}"; return 0; fi
+        error "Enter a name from 1 through 64 characters."
+    done
+}
+
+cron_prompt_navigation() {
+    case "$1" in
+        b|B) return 0 ;;
+        e|E) clear_screen; echo "Bye."; exit 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+cron_validate_schedule() {
+    local value="$1" f1 f2 f3 f4 f5 extra
+    if [[ "${value}" == @* ]]; then
+        read -r f1 extra <<< "${value}"
+        [[ -z "${extra}" ]] || return 1
+    else
+        read -r f1 f2 f3 f4 f5 extra <<< "${value}"
+        [[ -n "${f5}" && -z "${extra}" ]] || return 1
+    fi
+    cron_parse_entry "${value} /bin/true" 0
+}
+
+cron_prompt_schedule() {
+    local default="${1:-}" choice value minutes minute hour day weekdays
+    while :; do
+        echo
+        echo "Choose when the command should run:"
+        echo "  [1] Every X minutes"
+        echo "  [2] Every hour"
+        echo "  [3] Every day at a selected time"
+        echo "  [4] Selected weekdays at a selected time"
+        echo "  [5] Monthly"
+        echo "  [6] At system startup"
+        echo "  [7] Custom cron expression"
+        [[ -n "${default}" ]] && echo "  [K] Keep current schedule: ${default}"
+        echo "  [B] Back    [E] Exit"
+        read -r -p "Schedule type: " choice
+        case "${choice}" in
+            1) read -r -p "Interval in minutes (1-59): " minutes; cron_prompt_navigation "${minutes}" && return 1; [[ "${minutes}" =~ ^[0-9]+$ ]] && (( minutes >= 1 && minutes <= 59 )) || { error "Enter 1 through 59."; continue; }; value="*/${minutes} * * * *" ;;
+            2) read -r -p "Minute within each hour (0-59) [0]: " minute; cron_prompt_navigation "${minute}" && return 1; minute="${minute:-0}"; [[ "${minute}" =~ ^[0-9]+$ ]] && (( minute <= 59 )) || { error "Enter 0 through 59."; continue; }; value="$((10#${minute})) * * * *" ;;
+            3) read -r -p "Time (HH:MM): " value; cron_prompt_navigation "${value}" && return 1; [[ "${value}" =~ ^([01]?[0-9]|2[0-3]):([0-5][0-9])$ ]] || { error "Enter a valid 24-hour time."; continue; }; hour="${value%:*}"; minute="${value#*:}"; value="$((10#${minute})) $((10#${hour})) * * *" ;;
+            4) read -r -p "Weekdays (0-7 or names, comma-separated; 0/7=Sunday): " weekdays; cron_prompt_navigation "${weekdays}" && return 1; [[ "${weekdays}" =~ ^[0-7A-Za-z,-]+$ ]] || { error "Invalid weekday list."; continue; }; read -r -p "Time (HH:MM): " value; cron_prompt_navigation "${value}" && return 1; [[ "${value}" =~ ^([01]?[0-9]|2[0-3]):([0-5][0-9])$ ]] || { error "Enter a valid time."; continue; }; hour="${value%:*}"; minute="${value#*:}"; value="$((10#${minute})) $((10#${hour})) * * ${weekdays}" ;;
+            5) read -r -p "Day of month (1-31): " day; cron_prompt_navigation "${day}" && return 1; [[ "${day}" =~ ^[0-9]+$ ]] && (( day >= 1 && day <= 31 )) || { error "Enter 1 through 31."; continue; }; read -r -p "Time (HH:MM): " value; cron_prompt_navigation "${value}" && return 1; [[ "${value}" =~ ^([01]?[0-9]|2[0-3]):([0-5][0-9])$ ]] || { error "Enter a valid time."; continue; }; hour="${value%:*}"; minute="${value#*:}"; value="$((10#${minute})) $((10#${hour})) ${day} * *" ;;
+            6) value="@reboot" ;;
+            7) echo "Enter five cron fields, for example: 30 3 * * *"; read -r -p "Cron expression: " value; cron_prompt_navigation "${value}" && return 1; cron_validate_schedule "${value}" || { error "The cron expression is not valid or supported."; continue; } ;;
+            k|K) [[ -n "${default}" ]] || { error "There is no current schedule."; continue; }; value="${default}" ;;
+            b|B|0|"") return 1 ;;
+            e|E) clear_screen; echo "Bye."; exit 0 ;;
+            *) error "Invalid selection."; continue ;;
+        esac
+        CRON_PROMPT_SCHEDULE="${value}"
+        CRON_PROMPT_READABLE="$(cron_schedule_readable "${value}")"
+        printf '%-24s %s\n' "Cron expression:" "${value}"
+        printf '%-24s %s\n' "Human readable:" "${CRON_PROMPT_READABLE}"
+        return 0
+    done
+}
+
+cron_prompt_command() {
+    local default="${1:-}" value choice logfile
+    echo
+    echo "Enter an existing executable script path or an advanced shell command."
+    echo "URLs are not commands by themselves. Pipes, redirects, quotes and '%' have"
+    echo "normal cron/shell meaning; review the exact preview carefully."
+    while :; do
+        read -r -p "Command${default:+ [keep current with ENTER]}: " value
+        case "${value}" in b|B) return 1 ;; e|E) clear_screen; echo "Bye."; exit 0 ;; esac
+        value="${value:-${default}}"
+        [[ -n "${value}" && "${value}" != *$'\n'* && "${value}" != *$'\r'* ]] && break
+        error "Command must not be empty or contain a newline. Please try again."
+    done
+    if [[ -z "${default}" ]]; then
+        echo; echo "Logging:"; echo "  [1] Keep command output handled by cron"; echo "  [2] Append stdout and stderr to a log file"; echo "  [3] Discard stdout and stderr"
+        while :; do
+            read -r -p "Logging [1]: " choice
+            cron_prompt_navigation "${choice}" && return 1
+            case "${choice:-1}" in
+                1) break ;;
+                2)
+                    while :; do
+                        read -r -p "Absolute log file path (no spaces): " logfile
+                        cron_prompt_navigation "${logfile}" && return 1
+                        [[ "${logfile}" =~ ^/[A-Za-z0-9._/-]+$ ]] && break
+                        error "Enter a safe absolute log path without spaces."
+                    done
+                    value="${value} >> ${logfile} 2>&1"; break
+                    ;;
+                3) value="${value} >/dev/null 2>&1"; break ;;
+                *) error "Invalid logging selection. Please try again." ;;
+            esac
+        done
+    fi
+    CRON_PROMPT_COMMAND="${value}"
+}
+
+cron_prompt_user() {
+    local default="${1:-root}" user
+    while :; do
+        read -r -p "Run as existing user [${default}]: " user
+        cron_prompt_navigation "${user}" && return 1
+        user="${user:-${default}}"
+        if id "${user}" >/dev/null 2>&1; then CRON_PROMPT_USER="${user}"; return 0; fi
+        error "User '${user}' does not exist. Please try again."
+    done
+}
+
+cron_prompt_initial_status() {
+    local answer
+    while :; do
+        echo; echo "Initial status:"; echo "  [1] Enabled"; echo "  [2] Disabled"; echo "  [B] Back    [E] Exit"
+        read -r -p "Status [1]: " answer
+        cron_prompt_navigation "${answer}" && return 1
+        case "${answer:-1}" in 1) CRON_PROMPT_STATUS="ENABLED"; return 0 ;; 2) CRON_PROMPT_STATUS="DISABLED"; return 0 ;; *) error "Invalid status selection." ;; esac
+    done
+}
+
+cron_source_current_hash() {
+    local source="$1" temp hash
+    temp="$(mktemp)" || return 1
+    cron_read_source_to_file "${source}" "${temp}" || { rm -f -- "${temp}"; return 1; }
+    hash="$(cron_file_hash "${temp}")"; rm -f -- "${temp}"; printf '%s' "${hash}"
+}
+
+cron_add_job() {
+    local user source expected block status
+    banner; section "ADD CRON JOB"
+    echo "Creates a normal job in a user's crontab. Root is the default because the"
+    echo "S2S Manager itself runs as root. The selected user must already exist."
+    echo "The complete source is backed up before writing."
+    echo
+    cron_command_available || { error "crontab is not installed."; pause; return; }
+    cron_prompt_name || return
+    cron_prompt_schedule || return
+    cron_prompt_command || return
+    cron_prompt_user root || return; user="${CRON_PROMPT_USER}"
+    cron_prompt_initial_status || return; status="${CRON_PROMPT_STATUS}"
+    cron_build_inventory || { error "Existing cron sources could not be checked safely."; pause; return; }
+    source="user:${user}"; expected="$(cron_source_current_hash "${source}")" || { error "Could not read ${user}'s crontab."; pause; return; }
+    block="$(mktemp)" || return; cron_render_block "${CRON_PROMPT_NAME}" "${status}" "${CRON_PROMPT_SCHEDULE}" "${user}" "${CRON_PROMPT_COMMAND}" 0 > "${block}"
+    section "CRON JOB PREVIEW"
+    printf '%-24s %s\n' "Name:" "${CRON_PROMPT_NAME}"; printf '%-24s %s\n' "User:" "${user}"
+    printf '%-24s %s\n' "Schedule:" "${CRON_PROMPT_SCHEDULE}"; printf '%-24s %s\n' "Meaning:" "${CRON_PROMPT_READABLE}"
+    printf '%-24s %s\n' "Command:" "${CRON_PROMPT_COMMAND}"; printf '%-24s %s\n' "Status:" "${status}"
+    warn "This command will execute automatically with the permissions of ${user}."
+    if confirm_yes_no "Create this cron job?" "N" && cron_append_block "${source}" "${expected}" "${block}"; then
+        ok "Cron job created."; printf '%-24s %s\n' "Safety backup:" "${CRON_LAST_BACKUP}"
+    else info "No cron job was created."; fi
+    rm -f -- "${block}"; pause
+}
+
+cron_take_over_job() {
+    local i source block system_format=0 name status
+    banner; section "TAKE OVER EXISTING CRON JOB"
+    cron_command_available || { error "Install cron before changing scheduled jobs."; pause; return; }
+    cron_select_job unmanaged || { pause; return; }; i="${CRON_SELECTED}"
+    source="${CRON_JOB_SOURCE[$i]}"; cron_source_is_system "${source}" && system_format=1
+    cron_warn_package_owned_source "${source}"
+    if [[ "${CRON_JOB_MANAGED[$i]}" == "possible" ]]; then
+        warn "This line is currently only a comment. It may be an intentionally disabled job, an example or old documentation."
+        echo "Taking it over classifies it as a real disabled cron job. No command is executed now."
+        status="DISABLED"
+    else status="ENABLED"; fi
+    echo; printf '%-24s %s\n' "Source:" "${CRON_JOB_SOURCE_LABEL[$i]}"; printf '%-24s %s\n' "Schedule:" "${CRON_JOB_SCHEDULE[$i]}"
+    printf '%-24s %s\n' "Meaning:" "$(cron_schedule_readable "${CRON_JOB_SCHEDULE[$i]}")"
+    printf '%-24s %s\n' "User:" "${CRON_JOB_USER[$i]}"; printf '%-24s %s\n' "Command:" "${CRON_JOB_COMMAND[$i]}"; printf '%-24s %s\n' "Resulting status:" "${status}"
+    cron_prompt_name "${CRON_JOB_NAME[$i]}" || return
+    confirm_yes_no "Take over this existing cron entry?" "N" || return
+    block="$(mktemp)" || return
+    cron_render_block "${CRON_PROMPT_NAME}" "${status}" "${CRON_JOB_SCHEDULE[$i]}" "${CRON_JOB_USER[$i]}" "${CRON_JOB_COMMAND[$i]}" "${system_format}" > "${block}"
+    if cron_replace_lines "${source}" "${CRON_JOB_SOURCE_HASH[$i]}" "${CRON_JOB_START[$i]}" "${CRON_JOB_END[$i]}" "${block}"; then
+        ok "Cron job taken over without changing its schedule, user or command."; printf '%-24s %s\n' "Safety backup:" "${CRON_LAST_BACKUP}"
+    fi
+    rm -f -- "${block}"; pause
+}
+
+cron_edit_job() {
+    local i source system_format=0 name schedule command user block
+    banner; section "EDIT MANAGED CRON JOB"
+    cron_command_available || { error "Install cron before changing scheduled jobs."; pause; return; }
+    cron_select_job managed || { pause; return; }; i="${CRON_SELECTED}"; source="${CRON_JOB_SOURCE[$i]}"
+    cron_warn_package_owned_source "${source}"
+    cron_source_is_system "${source}" && system_format=1
+    cron_prompt_name "${CRON_JOB_NAME[$i]}" || return; name="${CRON_PROMPT_NAME}"
+    cron_prompt_schedule "${CRON_JOB_SCHEDULE[$i]}" || return; schedule="${CRON_PROMPT_SCHEDULE}"
+    cron_prompt_command "${CRON_JOB_COMMAND[$i]}" || return; command="${CRON_PROMPT_COMMAND}"
+    cron_prompt_user "${CRON_JOB_USER[$i]}" || return; user="${CRON_PROMPT_USER}"
+    block="$(mktemp)" || return
+    cron_render_block "${name}" "${CRON_JOB_STATUS[$i]}" "${schedule}" "${user}" "${command}" "${system_format}" > "${block}"
+    section "EDIT PREVIEW"
+    printf '%-24s %s\n' "Source:" "${CRON_JOB_SOURCE_LABEL[$i]}"
+    if [[ "${system_format}" == "0" && "${user}" != "${CRON_JOB_USER[$i]}" ]]; then
+        printf '%-24s %s crontab -> %s crontab\n' "User/source move:" "${CRON_JOB_USER[$i]}" "${user}"
+    fi
+    cat "${block}"; echo
+    if ! confirm_yes_no "Apply these changes?" "N"; then rm -f -- "${block}"; return; fi
+    if [[ "${system_format}" == "0" && "${user}" != "${CRON_JOB_USER[$i]}" ]]; then
+        if cron_move_user_job "${i}" "${user}" "${block}"; then
+            ok "Cron job moved to ${user}'s crontab and updated."
+        fi
+    elif cron_replace_lines "${source}" "${CRON_JOB_SOURCE_HASH[$i]}" "${CRON_JOB_START[$i]}" "${CRON_JOB_END[$i]}" "${block}"; then
+        ok "Cron job updated."; printf '%-24s %s\n' "Safety backup:" "${CRON_LAST_BACKUP}"
+    fi
+    rm -f -- "${block}"; pause
+}
+
+cron_toggle_job() {
+    local i source system_format=0 new_status block
+    banner; section "ENABLE / DISABLE MANAGED CRON JOB"
+    cron_command_available || { error "Install cron before changing scheduled jobs."; pause; return; }
+    cron_select_job managed || { pause; return; }; i="${CRON_SELECTED}"; source="${CRON_JOB_SOURCE[$i]}"
+    cron_warn_package_owned_source "${source}"
+    cron_source_is_system "${source}" && system_format=1
+    [[ "${CRON_JOB_STATUS[$i]}" == "ENABLED" ]] && new_status="DISABLED" || new_status="ENABLED"
+    printf '%-24s %s\n' "Job:" "${CRON_JOB_NAME[$i]}"; printf '%-24s %s -> %s\n' "Status:" "${CRON_JOB_STATUS[$i]}" "${new_status}"
+    printf '%-24s %s\n' "Schedule:" "${CRON_JOB_SCHEDULE[$i]}"; printf '%-24s %s\n' "Command:" "${CRON_JOB_COMMAND[$i]}"
+    confirm_yes_no "Change this job's status?" "N" || return
+    block="$(mktemp)" || return
+    cron_render_block "${CRON_JOB_NAME[$i]}" "${new_status}" "${CRON_JOB_SCHEDULE[$i]}" "${CRON_JOB_USER[$i]}" "${CRON_JOB_COMMAND[$i]}" "${system_format}" > "${block}"
+    if cron_replace_lines "${source}" "${CRON_JOB_SOURCE_HASH[$i]}" "${CRON_JOB_START[$i]}" "${CRON_JOB_END[$i]}" "${block}"; then
+        ok "Cron job is now ${new_status}."; printf '%-24s %s\n' "Safety backup:" "${CRON_LAST_BACKUP}"
+    fi
+    rm -f -- "${block}"; pause
+}
+
+cron_run_job_now() {
+    local i command user started ended rc answer
+    banner; section "RUN MANAGED CRON JOB NOW"
+    cron_command_available || { error "Install cron before running managed jobs."; pause; return; }
+    cron_select_job managed || { pause; return; }; i="${CRON_SELECTED}"; command="${CRON_JOB_COMMAND[$i]}"; user="${CRON_JOB_USER[$i]}"
+    printf '%-24s %s\n' "Job:" "${CRON_JOB_NAME[$i]}"; printf '%-24s %s\n' "Run as:" "${user}"; printf '%-24s %s\n' "Command:" "${command}"
+    warn "This is a real execution, not a simulation. Cron-specific environment variables are not reproduced."
+    if grep -Eq '(^|[^\\])%' <<< "${command}"; then error "The command contains an unescaped %. Manual execution could differ from cron and is refused."; pause; return; fi
+    read -r -p "Type RUN to execute now: " answer; [[ "${answer}" == "RUN" ]] || return
+    started="$(date +%s)"; echo; section "COMMAND OUTPUT"
+    if [[ "${user}" == "root" ]]; then /bin/sh -c "${command}"; rc=$?; else runuser -u "${user}" -- /bin/sh -c "${command}"; rc=$?; fi
+    ended="$(date +%s)"; echo; section "EXECUTION RESULT"; printf '%-24s %s\n' "Exit code:" "${rc}"; printf '%-24s %s seconds\n' "Runtime:" "$((ended - started))"
+    (( rc == 0 )) && ok "Manual execution completed successfully." || error "Manual execution failed."
+    pause
+}
+
+cron_delete_job() {
+    local i empty answer
+    banner; section "DELETE MANAGED CRON JOB"
+    cron_command_available || { error "Install cron before changing scheduled jobs."; pause; return; }
+    cron_select_job managed || { pause; return; }; i="${CRON_SELECTED}"
+    cron_warn_package_owned_source "${CRON_JOB_SOURCE[$i]}"
+    printf '%-24s %s\n' "Job:" "${CRON_JOB_NAME[$i]}"; printf '%-24s %s\n' "Source:" "${CRON_JOB_SOURCE_LABEL[$i]}"; printf '%-24s %s\n' "Command:" "${CRON_JOB_COMMAND[$i]}"
+    warn "Deleting this block permanently stops future scheduled executions. A source backup is created first."
+    read -r -p "Type DELETE to remove this complete S2S block: " answer; [[ "${answer}" == "DELETE" ]] || return
+    empty="$(mktemp)" || return
+    if cron_replace_lines "${CRON_JOB_SOURCE[$i]}" "${CRON_JOB_SOURCE_HASH[$i]}" "${CRON_JOB_START[$i]}" "${CRON_JOB_END[$i]}" "${empty}"; then
+        ok "Cron job deleted."; printf '%-24s %s\n' "Safety backup:" "${CRON_LAST_BACKUP}"
+    fi
+    rm -f -- "${empty}"; pause
+}
+
+cron_show_overview() {
+    banner; section "ALL CRON JOBS"
+    info "Reading user crontabs, /etc/crontab and /etc/cron.d. This can take a few seconds..."; echo
+    cron_build_inventory || { error "Cron sources could not be read."; pause; return; }
+    cron_print_inventory "${CRON_HUMAN_READABLE}"
+    cron_show_periodic_directories
+    echo; info "S2S = managed metadata block; NO = active unmanaged job; POSSIBLE = syntactically plausible commented job."
+    pause
+}
+
+cron_show_periodic_directories() {
+    local directory file found=0
+    section "PERIODIC SCRIPT DIRECTORIES"
+    echo "These entries are executable scripts selected by directory, not ordinary"
+    echo "five-field cron lines. They are displayed here but not edited as job lines."
+    echo
+    for directory in /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly; do
+        [[ -d "${directory}" ]] || continue
+        for file in "${directory}"/*; do
+            [[ -f "${file}" ]] || continue
+            printf '%-24s %-10s %s\n' "${directory}" "$([[ -x "${file}" ]] && echo executable || echo disabled)" "$(basename "${file}")"
+            found=$((found + 1))
+        done
+    done
+    (( found > 0 )) || info "No periodic directory scripts were found."
+}
+
+cron_move_user_job() {
+    local index="$1" new_user="$2" block="$3" old_source target_source old_current old_staged target_current target_staged
+    local target_hash target_backup old_backup current_hash
+    old_source="${CRON_JOB_SOURCE[$index]}"; target_source="user:${new_user}"
+    if [[ "${CRON_MALFORMED_SOURCE_LIST}" == *"|${old_source}|"* || "${CRON_MALFORMED_SOURCE_LIST}" == *"|${target_source}|"* ]]; then
+        error "The original or target crontab contains malformed S2S metadata. No changes were written."
+        return 1
+    fi
+    old_current="$(mktemp)" || return 1; old_staged="$(mktemp)" || { rm -f -- "${old_current}"; return 1; }
+    target_current="$(mktemp)" || { rm -f -- "${old_current}" "${old_staged}"; return 1; }
+    target_staged="$(mktemp)" || { rm -f -- "${old_current}" "${old_staged}" "${target_current}"; return 1; }
+
+    cron_read_source_to_file "${old_source}" "${old_current}" || return 1
+    current_hash="$(cron_file_hash "${old_current}")"
+    if [[ "${current_hash}" != "${CRON_JOB_SOURCE_HASH[$index]}" ]]; then
+        error "The original crontab changed outside S2S Manager. No changes were written."
+        rm -f -- "${old_current}" "${old_staged}" "${target_current}" "${target_staged}"; return 1
+    fi
+    cron_read_source_to_file "${target_source}" "${target_current}" || return 1
+    target_hash="$(cron_file_hash "${target_current}")"
+    cp -- "${target_current}" "${target_staged}"; [[ ! -s "${target_staged}" ]] || echo >> "${target_staged}"; cat "${block}" >> "${target_staged}"
+    awk -v first="${CRON_JOB_START[$index]}" -v last="${CRON_JOB_END[$index]}" 'NR<first || NR>last {print}' "${old_current}" > "${old_staged}"
+    cron_prepare_header "${target_staged}" && cron_prepare_header "${old_staged}" || { rm -f -- "${old_current}" "${old_staged}" "${target_current}" "${target_staged}"; return 1; }
+
+    if [[ "$(cron_source_current_hash "${target_source}")" != "${target_hash}" ]] || \
+       [[ "$(cron_source_current_hash "${old_source}")" != "${CRON_JOB_SOURCE_HASH[$index]}" ]]; then
+        error "A source crontab changed outside S2S Manager. No changes were written."
+        rm -f -- "${old_current}" "${old_staged}" "${target_current}" "${target_staged}"; return 1
+    fi
+    target_backup="$(cron_backup_source "${target_source}" "${target_current}")" || return 1
+    old_backup="$(cron_backup_source "${old_source}" "${old_current}")" || return 1
+    if ! cron_install_source_file "${target_source}" "${target_staged}"; then
+        error "The target user's crontab could not be written. Nothing was moved."
+        rm -f -- "${old_current}" "${old_staged}" "${target_current}" "${target_staged}"; return 1
+    fi
+    if ! cron_install_source_file "${old_source}" "${old_staged}"; then
+        error "Removing the original failed; restoring the target user's crontab."
+        cron_install_source_file "${target_source}" "${target_current}" >/dev/null 2>&1 || error "Target rollback failed; restore ${target_backup} manually."
+        rm -f -- "${old_current}" "${old_staged}" "${target_current}" "${target_staged}"; return 1
+    fi
+    printf '%-24s %s\n' "Original backup:" "${old_backup}"
+    printf '%-24s %s\n' "Target backup:" "${target_backup}"
+    rm -f -- "${old_current}" "${old_staged}" "${target_current}" "${target_staged}"
+}
+
+cron_warn_package_owned_source() {
+    local source="$1" path owner
+    [[ "${source}" == file:* ]] || return 0
+    path="${source#file:}"
+    if command_available dpkg-query; then
+        owner="$(dpkg-query -S "${path}" 2>/dev/null | head -1 || true)"
+        if [[ -n "${owner}" ]]; then
+            warn "This cron source belongs to a Debian package: ${owner%%:*}"
+            echo "A future package update may replace or conflict with manual changes."
+        fi
+    fi
+}
+
+cron_install_package() {
+    local answer
+    banner; section "INSTALL CRON SERVICE"
+    if cron_command_available; then info "The crontab command is already installed."; pause; return; fi
+    warn "This installs the Debian cron package and starts/enables cron.service."
+    echo "Existing system files are not removed. New scheduled jobs can execute automatically"
+    echo "with their configured user's permissions after they are enabled."
+    read -r -p "Type INSTALL CRON to continue: " answer
+    [[ "${answer}" == "INSTALL CRON" ]] || return
+    apt-get update && apt-get install -y cron || { error "Cron package installation failed."; pause; return; }
+    systemctl enable --now cron || { error "cron.service could not be enabled and started."; pause; return; }
+    ok "Cron installed, active and enabled at boot."
+    pause
+}
+
+cron_diagnostics() {
+    local active enabled i source path owner mode command_path
+    banner; section "CRON SERVICE AND DIAGNOSTICS"
+    cron_command_available && ok "crontab command available." || error "crontab is not installed."
+    if systemctl is-active --quiet cron 2>/dev/null; then active="active"; ok "cron.service is active."; else active="inactive"; error "cron.service is not active."; fi
+    if systemctl is-enabled --quiet cron 2>/dev/null; then enabled="enabled"; ok "cron.service is enabled at boot."; else enabled="disabled"; warn "cron.service is not enabled at boot."; fi
+    cron_build_inventory || true
+    printf '%-24s %s\n' "Detected jobs:" "${CRON_JOB_COUNT}"; printf '%-24s %s\n' "Unreadable sources:" "${CRON_SOURCE_ERROR_COUNT}"; printf '%-24s %s\n' "Malformed S2S metadata:" "${CRON_MALFORMED_COUNT}"
+    (( CRON_MALFORMED_COUNT == 0 )) && ok "No malformed S2S cron metadata was detected." || error "Malformed S2S metadata requires manual review before that block is changed."
+    section "JOB USERS AND COMMANDS"
+    for ((i=1; i<=CRON_JOB_COUNT; i++)); do
+        if id "${CRON_JOB_USER[$i]}" >/dev/null 2>&1; then
+            ok "${CRON_JOB_NAME[$i]}: user ${CRON_JOB_USER[$i]} exists."
+        else
+            error "${CRON_JOB_NAME[$i]}: user ${CRON_JOB_USER[$i]} does not exist."
+        fi
+        command_path="${CRON_JOB_COMMAND[$i]%% *}"
+        if [[ "${command_path}" == /* ]]; then
+            if [[ -x "${command_path}" ]]; then
+                ok "${CRON_JOB_NAME[$i]}: ${command_path} is executable."
+            elif [[ -e "${command_path}" ]]; then
+                warn "${CRON_JOB_NAME[$i]}: ${command_path} exists but is not executable."
+            else
+                warn "${CRON_JOB_NAME[$i]}: command path ${command_path} does not exist."
+            fi
+        fi
+    done
+    (( CRON_JOB_COUNT > 0 )) || info "No regular jobs were available for user/command checks."
+
+    section "SYSTEM CRON FILE PERMISSIONS"
+    while IFS= read -r source; do
+        [[ "${source}" == file:* ]] || continue
+        path="${source#file:}"
+        owner="$(stat -c '%U:%G' "${path}" 2>/dev/null || echo unknown)"
+        mode="$(stat -c '%a' "${path}" 2>/dev/null || echo unknown)"
+        printf '%-34s owner=%-14s mode=%s\n' "${path}" "${owner}" "${mode}"
+        [[ "${owner}" == "root:root" ]] || warn "${path} is not owned by root:root."
+        if [[ "${mode}" =~ ^[0-7]*[2367][0-7]$ || "${mode}" =~ ^[0-7]*[0-7][2367]$ ]]; then
+            error "${path} is writable by group or others."
+        fi
+    done < <(cron_list_sources)
+    section "RECENT CRON JOURNAL"
+    journalctl -u cron -n 30 --no-pager 2>/dev/null || info "No cron journal entries could be displayed."
+    info "Diagnostics did not change the cron service or any job."
+    pause
+}
+
+cron_management_menu() {
+    local choice install_line
+    while :; do
+        install_line=""
+        cron_command_available || install_line="  [9] Install cron package"
+        banner; section "CRON / SCHEDULED TASKS"
+        cat <<EOF
+Manage regular user crontabs, /etc/crontab and existing /etc/cron.d files.
+External lines are preserved. Every write creates a backup and checks that the
+source has not changed since selection.
+
+  [1] Show all cron jobs
+  [2] Add cron job
+  [3] Take over active or possible commented job
+  [4] Edit managed cron job
+  [5] Enable / disable managed cron job
+  [6] Run managed cron job now
+  [7] Delete managed cron job
+  [8] Cron service and diagnostics
+${install_line}
+  [H] Human-readable schedule: $([[ "${CRON_HUMAN_READABLE}" == "1" ]] && echo ON || echo OFF)
+  [B] Back to main menu
+  [E] Exit
+EOF
+        echo; read -r -p "Selection: " choice
+        case "${choice}" in
+            1) cron_show_overview ;; 2) cron_add_job ;; 3) cron_take_over_job ;; 4) cron_edit_job ;;
+            5) cron_toggle_job ;; 6) cron_run_job_now ;; 7) cron_delete_job ;; 8) cron_diagnostics ;; 9) cron_install_package ;;
+            h|H) [[ "${CRON_HUMAN_READABLE}" == "1" ]] && CRON_HUMAN_READABLE=0 || CRON_HUMAN_READABLE=1 ;;
+            b|B|0|"") return ;; e|E) clear_screen; echo "Bye."; exit 0 ;; *) error "Invalid selection."; sleep 1 ;;
+        esac
+    done
+}
+
+# End cron / scheduled-task management
+
 main_menu() {
     while :; do
         banner
@@ -11666,6 +12581,7 @@ main_menu() {
             "  [22] UFW"
             "  [23] Access Check (read-only)"
             "  [24] IPTABLES / Packet Filter (read-only)"
+            "  [25] Cron / Scheduled Tasks"
         )
 
         render_menu_pair \
@@ -11712,6 +12628,7 @@ main_menu() {
             22) ufw_management_menu ;;
             23) access_check_menu ;;
             24) iptables_management_menu ;;
+            25) cron_management_menu ;;
             [eE]|0) clear_screen; echo "Bye."; exit 0 ;;
             *) error "Invalid selection."; sleep 1 ;;
         esac
