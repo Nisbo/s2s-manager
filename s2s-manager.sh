@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.5.3"
+VERSION="1.5.4"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -11928,18 +11928,26 @@ cron_build_inventory() {
 }
 
 cron_print_inventory() {
-    local human="${1:-1}" i type_label readable display_name
+    local human="${1:-1}" i type_label readable display_name status_display type_display
     if (( CRON_JOB_COUNT == 0 )); then info "No regular cron jobs were found."; return; fi
     printf '%-4s %-10s %-10s %-16s %-18s %s\n' "#" "Status" "Type" "User" "Schedule" "Name"
     printf '%-4s %-10s %-10s %-16s %-18s %s\n' "────" "──────────" "──────────" "────────────────" "──────────────────" "────────────────────────────────────────"
     for ((i=1; i<=CRON_JOB_COUNT; i++)); do
         case "${CRON_JOB_MANAGED[$i]}" in
-            yes) type_label="S2S"; display_name="${CRON_JOB_NAME[$i]}" ;;
-            possible) type_label="POSSIBLE"; display_name="" ;;
-            *) type_label="EXTERNAL"; display_name="" ;;
+            yes) type_label="S2S"; type_display="${C_BOLD}${C_CYAN}${type_label}${C_RESET}"; display_name="${CRON_JOB_NAME[$i]}" ;;
+            possible) type_label="POSSIBLE"; type_display="${C_BOLD}${C_YELLOW}${type_label}${C_RESET}"; display_name="" ;;
+            *) type_label="EXTERNAL"; type_display="${C_DIM}${type_label}${C_RESET}"; display_name="" ;;
         esac
-        printf '%-4s %-10s %-10s %-16s %-18s %s\n' "${i}" "${CRON_JOB_STATUS[$i]}" "${type_label}" \
-            "${CRON_JOB_USER[$i]}" "${CRON_JOB_SCHEDULE[$i]}" "${display_name}"
+        if [[ "${CRON_JOB_STATUS[$i]}" == "ENABLED" ]]; then
+            status_display="${C_BOLD}${C_GREEN}ENABLED${C_RESET}"
+        else
+            status_display="${C_BOLD}${C_YELLOW}DISABLED${C_RESET}"
+        fi
+        printf '%-4s ' "${i}"
+        pad_ansi_right "${status_display}" 10
+        printf ' '
+        pad_ansi_right "${type_display}" 10
+        printf ' %-16s %-18s %s\n' "${CRON_JOB_USER[$i]}" "${CRON_JOB_SCHEDULE[$i]}" "${display_name}"
         if [[ "${human}" == "1" ]]; then
             readable="$(cron_schedule_readable "${CRON_JOB_SCHEDULE[$i]}")"
             printf '     %-12s %s\n' "Readable:" "${readable}"
