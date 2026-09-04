@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.5.5"
+VERSION="1.5.6"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -11791,13 +11791,13 @@ cron_normalize_weekday_token() {
     local token
     token="$(tr '[:lower:]' '[:upper:]' <<< "$1")"
     case "${token}" in
-        0|7|SUN|SUNDAY|SO|SON|SONNTAG) printf '0' ;;
-        1|MON|MONDAY|MO|MONTAG) printf '1' ;;
-        2|TUE|TUESDAY|DI|DIE|DIENSTAG) printf '2' ;;
-        3|WED|WEDNESDAY|MI|MIT|MITTWOCH) printf '3' ;;
-        4|THU|THURSDAY|DO|DON|DONNERSTAG) printf '4' ;;
-        5|FRI|FRIDAY|FR|FRE|FREITAG) printf '5' ;;
-        6|SAT|SATURDAY|SA|SAM|SAMSTAG|SONNABEND) printf '6' ;;
+        0|7|SUN|SUNDAY) printf '0' ;;
+        1|MON|MONDAY) printf '1' ;;
+        2|TUE|TUESDAY) printf '2' ;;
+        3|WED|WEDNESDAY) printf '3' ;;
+        4|THU|THURSDAY) printf '4' ;;
+        5|FRI|FRIDAY) printf '5' ;;
+        6|SAT|SATURDAY) printf '6' ;;
         *) return 1 ;;
     esac
 }
@@ -12221,19 +12221,19 @@ cron_prompt_schedule() {
             4)
                 echo
                 echo "Choose one or more weekdays. Sunday may be entered as 0 or 7; both"
-                echo "mean the same day. Numbers, English names and German names are accepted:"
+                echo "mean the same day. Numbers and the following English names are accepted:"
                 echo
-                echo "  1  MON  MONDAY     MO  MONTAG       Monday"
-                echo "  2  TUE  TUESDAY    DI  DIENSTAG     Tuesday"
-                echo "  3  WED  WEDNESDAY  MI  MITTWOCH     Wednesday"
-                echo "  4  THU  THURSDAY   DO  DONNERSTAG   Thursday"
-                echo "  5  FRI  FRIDAY     FR  FREITAG      Friday"
-                echo "  6  SAT  SATURDAY   SA  SAMSTAG      Saturday"
-                echo "  0/7 SUN  SUNDAY     SO  SONNTAG      Sunday"
-                echo "      SONNABEND is also accepted as Saturday. Upper/lower case is ignored."
+                printf '  %-3s %-4s %-10s %s\n' "1" "MON" "MONDAY" "Monday"
+                printf '  %-3s %-4s %-10s %s\n' "2" "TUE" "TUESDAY" "Tuesday"
+                printf '  %-3s %-4s %-10s %s\n' "3" "WED" "WEDNESDAY" "Wednesday"
+                printf '  %-3s %-4s %-10s %s\n' "4" "THU" "THURSDAY" "Thursday"
+                printf '  %-3s %-4s %-10s %s\n' "5" "FRI" "FRIDAY" "Friday"
+                printf '  %-3s %-4s %-10s %s\n' "6" "SAT" "SATURDAY" "Saturday"
+                printf '  %-3s %-4s %-10s %s\n' "0/7" "SUN" "SUNDAY" "Sunday"
+                echo "  Upper/lower case is ignored."
                 echo
                 echo "Separate individual days with commas; spaces and duplicates are cleaned up."
-                echo "Ranges are allowed with a hyphen. Examples: 1,3,5   MON-FRI   Di, Friday, 7"
+                echo "Ranges are allowed with a hyphen. Examples: 1,3,5   MON-FRI   Tue, Friday, 7"
                 while :; do
                     read -r -p "Weekdays: " weekdays
                     cron_prompt_navigation "${weekdays}" && return 1
