@@ -1,142 +1,122 @@
 # IPsec S2S Manager
 
-Interactive Bash manager for **route-based IKEv2/IPsec Site-to-Site tunnels on Debian 13** using **strongSwan/swanctl**, Linux **VTI** interfaces and optional **WireGuard full-tunnel remote access**.
+Interactive Bash management for route-based IKEv2/IPsec tunnels, WireGuard remote access, UFW, packet-path diagnostics and cron jobs on Debian 13.
 
-It is designed for three common scenarios:
+The project is intended for administrators who want guided, reviewable changes without hiding the underlying Linux configuration. It uses strongSwan/swanctl, VTI interfaces, routing table 220 and standard Debian services. Existing installations can be discovered and reviewed before the manager takes ownership.
 
-- **UniFi Gateway ↔ Debian** IPsec S2S
-- **Debian / strongSwan ↔ Debian / strongSwan** IPsec S2S
-- **Phone / tablet / computer ↔ Debian** WireGuard full-tunnel VPN
+> All addresses and names in this documentation are fictional examples. The real interface uses terminal colors; code blocks on GitHub are plain text.
 
-The manager guides you through setup, validates conflicts, creates and maintains the required configuration, and provides diagnostics, import/take-over, backup and transfer tools.
+## What it manages
 
-> All addresses and names in the examples are fictional documentation data. The real program uses terminal colors; the simulated screens below are plain text so they render reliably on GitHub.
+| Area | Main-menu entry | Capabilities |
+|---|---:|---|
+| IPsec Site-to-Site | 1–19 | UniFi ↔ Debian and Debian ↔ Debian tunnel lifecycle |
+| Server status | 20 | Host, virtualization, CPU, memory, disk and runtime overview |
+| WireGuard | 21 | Full-tunnel IPv4 server and client management |
+| UFW | 22 | Safe installation, activation and incoming rule management |
+| Access Check | 23 | Read-only route, firewall, NAT and local-service analysis |
+| IPTABLES | 24 | Read-only filter, NAT, Docker and packet-path diagnostics |
+| Cron | 25 | Inventory and management of scheduled tasks |
 
-## Features
+## Highlights
 
 ### IPsec Site-to-Site
 
-- Route-based **IKEv2/IPsec** with **strongSwan / swanctl**
-- Linux **VTI** interfaces and a separate `/30` transfer network per tunnel
-- Routing through **table 220**
+- Route-based IKEv2/IPsec using strongSwan and `swanctl`
+- Linux VTI interface and dedicated `/30` transfer network per tunnel
+- Explicit VPN routes in table 220 without a catch-all default route
 - UniFi Gateway and Debian/strongSwan peers
-- Static IPv4, hostname/DDNS and dynamic/unknown UniFi endpoints
-- Automatic VTI interface and mark/key allocation
-- Network overlap, route, endpoint and Authentication-ID conflict validation
-- Remote-network management
-- Combined read-only overview of every tunnel transfer/remote network and its live table-220 route state
+- Static IPv4, DDNS and dynamic/unknown UniFi endpoints
+- Validation of address overlap, routes, endpoints and authentication IDs
+- Persistent reconnection attempts for Debian peers after provider outages
+- Install, uninstall, re-apply, reconnect and detailed diagnostics
+- Discovery and read-only import before controlled take-over
+- Timestamped backups, restore, peer bundles and SCP transfer
 - Generated UniFi configuration reference
-- Install, uninstall, re-apply and reconnect operations
-- Persistent Debian-to-Debian initiation retries after temporary network/provider outages
-- IKE/CHILD_SA, VTI, routing and traffic diagnostics
-- Tunnel backup/restore
-- Discovery and read-only import of existing strongSwan/VTI tunnels
-- Controlled take-over with timestamped backups
-- Debian peer bundles containing the mirrored settings and PSK
-- Direct peer-bundle transfer via SCP
-- Optional UFW rules for UDP 500/4500
 
 ### WireGuard remote access
 
-- Create a new **full-tunnel IPv4 WireGuard server**
-- Detect existing `/etc/wireguard/*.conf` installations
-- Read-only import of existing servers and peers
-- Controlled migration/take-over with automatic backup and rollback on failed start
-- Existing server private key, peer public keys, PSKs and client IPs are preserved where available
-- Add and remove managed clients without restarting `wg0`
-- Live peer updates preserve existing client sessions, handshake timestamps and traffic counters
-- Rename client display names without changing keys or VPN IPs
-- Change a managed `/24` VPN network while preserving all keys and client host numbers
-- Create a safety backup and automatically roll back a failed WireGuard network migration
-- Completely reset a managed WireGuard server while keeping packages installed and S2S untouched
-- Generate complete client `.conf` files for manager-created clients
-- Display QR codes; `qrencode` can be installed on demand
-- Show SCP/SFTP transfer instructions for macOS, Linux and Windows PowerShell
-- Full-tunnel Internet access (`AllowedIPs = 0.0.0.0/0`)
-- NAT/forwarding setup and IPv4 forwarding
-- Integration with IPsec policy routing: the whole WireGuard VPN network is added to table 220 when required
-- Keep table 220 limited to explicit VPN routes so Docker/Podman/VM networks fall through to the normal routing table
-- WireGuard status, live handshakes and RX/TX counters
-- Optional UFW rule for the configured WireGuard UDP port
+- New full-tunnel IPv4 server or discovery of existing configurations
+- Read-only import followed by explicit migration/take-over
+- Backup and automatic rollback when a migrated configuration cannot start
+- Add, rename and remove clients while preserving active peer state
+- Generated client configuration and optional QR-code display
+- Change the managed `/24` VPN network while preserving keys and client host numbers
+- NAT, IPv4 forwarding and table-220 integration
+- Complete managed-server reset without removing packages or IPsec tunnels
+- Live handshakes and RX/TX counters
 
-### UFW firewall management
+### UFW firewall
 
-- Dedicated **[22] UFW** main-menu entry
-- Detect whether UFW is installed and whether it is active
-- Offer safe package installation when UFW is missing
-- Detect the current SSH server port and prepare its allow rule first
-- Keep UFW disabled after installation so existing traffic is not unexpectedly blocked
-- Show status/default policies, numbered active rules, and a readable table of stored rules while UFW is inactive
-- Add permanent incoming TCP/UDP allow rules with a guided preview
-- Add temporary allow rules with a persistent systemd expiry timer (15 minutes through 7 days)
-- Highlight temporary rules in yellow and show their expiry as `[TEMP until ...]`
-- Delete numbered active rules with preview, typed confirmation and SSH/VPN protection
-- Safely enable UFW only after verifying an SSH rule, with immediate and boot-state checks
-- Disable UFW while preserving stored rules, or explicitly reload an active firewall
-- Reject duplicate rules so an existing permanent rule cannot accidentally become temporary
-- Keep provider/cloud firewall management explicitly separate
+- Detect, install, safely enable, disable and reload UFW
+- Prepare and verify the current SSH port before activation
+- Keep UFW disabled immediately after a new installation for review
+- Display active numbered rules or readable stored rules while inactive
+- Guided permanent TCP/UDP incoming rules
+- Temporary rules with persistent systemd expiry timers
+- Preview, duplicate detection and protection for SSH/VPN rules
+- Clear separation from provider or cloud firewalls
 
-### Read-only access check
+### Access and packet-filter diagnostics
 
-- Dedicated **[23] Access Check** main-menu entry
-- Select a managed WireGuard client or enter a custom source network, then choose from the detected interfaces
-- Check forwarded access toward the IPv4 Internet, one IPv4 host, or one IPv4 CIDR network
-- Check a TCP/UDP service on the Debian server, including listener and matching UFW INPUT rule
-- Inspect interface state, WireGuard peer/client AllowedIPs, IPv4 forwarding, kernel route selection, UFW routed policy, iptables forwarding and Internet NAT
-- Report a prominent Internet, routed-network or local-service access verdict plus detailed evidence
-
-### Read-only iptables / packet-filter diagnostics
-
-- Dedicated **[24] IPTABLES / Packet Filter** main-menu entry
-- Summarize the active IPv4 backend, forwarding state, default policies and rule counts
-- Show complete INPUT/FORWARD/OUTPUT counters and NAT/DNAT/MASQUERADE rules
-- Correlate Docker-published ports with the `DOCKER`, `DOCKER-USER` and `DOCKER-FORWARD` chains
-- Filter live S2S/WireGuard-related rules and show table-220 routing context
-- Analyse an arriving source, ingress interface, original destination, protocol and port
-- Detect an exact DNAT target and explain whether the packet follows INPUT or FORWARD
-- Never add, delete, flush or change a packet-filter rule or policy
+- Analyse traffic from a WireGuard client or custom source/interface
+- Check Internet, routed-network and local TCP/UDP service access
+- Inspect forwarding, route selection, UFW policy, iptables and NAT evidence
+- Show INPUT, FORWARD and OUTPUT policies/rules with counters
+- Show DNAT, MASQUERADE and Docker firewall chains
+- Detect exact Docker DNAT mappings and explain INPUT versus FORWARD paths
+- Never create, delete or flush packet-filter rules in the IPTABLES section
 
 ### Cron / scheduled tasks
 
-- Dedicated **[25] Cron / Scheduled Tasks** main-menu entry
-- Unified inventory of user crontabs, `/etc/crontab`, `/etc/cron.d/*` and periodic script directories
-- Optional human-readable descriptions alongside the original cron expression
-- Add jobs to root's or another existing user's normal crontab
-- Explicitly take over active unmanaged entries or syntactically plausible commented entries
-- Edit name, schedule, command and execution user; guarded user-to-user migration includes rollback
-- Enable/disable individual managed jobs without deleting them, run them manually, or delete them
-- Preserve unrelated variables, comments and jobs in their original source
-- Insert a versioned `S2S-MANAGER-CRON-FILE` header only on the first write
-- Back up every affected source and abort if it changed outside the manager
-- Diagnose `cron.service`, boot activation, malformed S2S metadata and recent journal messages
+- Inventory user crontabs, `/etc/crontab`, `/etc/cron.d/*` and periodic directories
+- Distinguish `S2S`, `EXTERNAL` and plausible commented jobs
+- Optional human-readable schedule descriptions
+- Guided schedules with explained weekday values and English names
+- Add, take over, edit, enable/disable, run and delete managed jobs
+- Change the execution user, including guarded user-to-user migration
+- Preserve unrelated jobs, variables and comments in their original source
+- Back up every affected source and abort after concurrent external changes
+- Diagnose the cron service, users, commands, permissions and recent journal entries
 
-### Server and VM status
+## Safety model
 
-- Show the server hostname, primary IPv4 and every non-loopback global IPv4/interface directly on the main menu
-- Read-only provider/DMI, virtualization, OS, kernel, architecture and exposed CPU information
-- DMI-assigned memory where available, Linux-usable/used/available RAM and configured swap
-- Root-filesystem capacity and usage plus uptime and 1/5/15-minute load averages
-- Color-coded warnings for low available memory, missing swap and high root-filesystem usage
-- Explicitly avoids guessing whether a KVM/QEMU guest is managed by Proxmox, OpenStack or another hidden host platform
+The manager runs as root because it configures system networking and services. It therefore treats every write as an administrative operation:
+
+- Status and inventory screens do not rewrite tunnel, firewall or cron-job configuration.
+- Destructive or connectivity-sensitive operations show a preview and require confirmation.
+- Existing IPsec, WireGuard and cron configurations are imported read-only first.
+- Take-over and migration create timestamped backups.
+- WireGuard migration attempts automatic rollback after a failed start.
+- Cron writes compare the selected source with its current hash to avoid overwriting parallel edits.
+- UFW activation is refused without a suitable SSH safety rule.
+- The Access Check and IPTABLES sections are read-only.
+- Secrets are stored with restrictive permissions and are not printed in normal status views.
+
+Always keep an independent provider console available when changing remote networking or firewall configuration.
 
 ## Requirements
 
-- Debian **13**
-- root privileges
-- Internet/package access for initial package installation
-- Public IPv4 or a suitable routed/NAT environment
-- IPsec: UDP **500** and **4500** reachable between peers
-- WireGuard: configured UDP listen port reachable (default **51820**)
-- Debian-to-Debian bundle transfer: SSH access between servers
+- Debian 13
+- Root privileges
+- Bash and standard Debian system tools
+- Internet/package access when dependencies must be installed
+- Public IPv4 or an appropriate routed/NAT environment
+- IPsec peers reachable on UDP 500 and UDP 4500
+- WireGuard listen port reachable when WireGuard is used (default UDP 51820)
+- SSH connectivity for direct Debian peer-bundle transfer
 
-Provider/cloud firewalls are separate from UFW and must be configured independently.
+UFW, WireGuard, QR generation and cron support are optional until their corresponding feature is used. Provider/cloud firewalls remain outside the manager.
 
-## Installation
+## Install
 
-Save the stable script as `s2s-manager.sh` and run:
+Download the current script from GitHub:
 
 ```bash
-chmod +x s2s-manager.sh
+curl -fsSL https://raw.githubusercontent.com/Nisbo/s2s-manager/main/s2s-manager.sh -o s2s-manager.sh.new
+bash -n s2s-manager.sh.new
+install -m 0755 s2s-manager.sh.new s2s-manager.sh
+rm -f s2s-manager.sh.new
 sudo ./s2s-manager.sh
 ```
 
@@ -146,136 +126,144 @@ When already logged in as root:
 ./s2s-manager.sh
 ```
 
-Manager state is stored under:
+For security-sensitive environments, inspect the downloaded script before executing it as root.
 
-```text
-/root/s2s-manager/
+## Update
+
+The manager is a standalone script. Replace it with the current version and start it again:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Nisbo/s2s-manager/main/s2s-manager.sh -o s2s-manager.sh.new
+bash -n s2s-manager.sh.new
+install -m 0755 s2s-manager.sh.new s2s-manager.sh
+rm -f s2s-manager.sh.new
+sudo ./s2s-manager.sh
 ```
 
-Important managed paths include:
-
-```text
-/etc/swanctl/conf.d/s2s-manager-<tunnel>.conf
-/usr/local/sbin/s2s-manager-vti-<tunnel>.sh
-/etc/systemd/system/s2s-manager-vti-<tunnel>.service
-/etc/wireguard/wg0.conf
-/root/s2s-manager/wireguard/
-```
+Saved manager state and installed system configurations are not removed by replacing the script. Review the version shown in the banner after updating.
 
 ## Main screen
 
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.5.7                          ║
+║                       Version 1.5.8                          ║
 ╚══════════════════════════════════════════════════════════════╝
 
-──────────────────────────────────────────────────────────────
-  CONFIGURED TUNNELS
-──────────────────────────────────────────────────────────────
-#    Name                    Interface   Tunnel Network       Management  Connection
-1    Office-UniFi            ipsec0      10.200.202.0/30      MANAGED     CONNECTED
-2    VPS-East - VPS-West     ipsec1      10.200.210.0/30      MANAGED     CONNECTED
+State directory: /root/s2s-manager
+Server hostname:  vps-example
+Primary IPv4:     198.51.100.10
 
-  TUNNEL CONFIGURATION                         TUNNEL OPERATIONS
-  ─────────────────────────────────────────    ────────────────────────────────────────
-  [1] Show tunnel configuration                [7] Install tunnel on Debian
-  [2] Add S2S tunnel                           [8] Re-apply tunnel configuration
-  [3] Add remote network to tunnel             [9] Reconnect tunnel
-  [4] Remove remote network from tunnel        [10] Tunnel diagnostics
-  [5] Show UniFi configuration
-  [6] Rename tunnel display name
+TUNNEL CONFIGURATION                         TUNNEL OPERATIONS
+────────────────────────────────────────     ────────────────────────────────────────
+[1] Show tunnel configuration                [7] Install tunnel on Debian
+[2] Add S2S tunnel                           [8] Re-apply tunnel configuration
+[3] Add remote network to tunnel             [9] Reconnect tunnel
+[4] Remove remote network from tunnel        [10] Tunnel diagnostics
+[5] Show UniFi configuration
+[6] Rename tunnel display name
 
-  REMOVE / DELETE                              IMPORT / TAKE OVER
-  ─────────────────────────────────────────    ────────────────────────────────────────
-  [11] Uninstall tunnel from Debian            [13] Discover / import existing tunnels
-  [12] Delete tunnel completely                [14] Take over imported tunnel
-                                                [15] Show Take Over backups
+REMOVE / DELETE                              IMPORT / TAKE OVER
+────────────────────────────────────────     ────────────────────────────────────────
+[11] Uninstall tunnel from Debian            [13] Discover / import existing tunnels
+[12] Delete tunnel completely                [14] Take over imported tunnel
+                                              [15] Show Take Over backups
 
-  EXPORT / TRANSFER                            SYSTEM / VPN / UFW / IPTABLES / CRON
-  ─────────────────────────────────────────    ────────────────────────────────────────
-  [16] Tunnel backup / restore                 [20] Show system status
-  [17] Create Debian peer bundle               [21] WireGuard
-  [18] Transfer Debian peer bundle via SCP
-  [19] Import Debian peer bundle               [22] UFW
-                                                [23] Access Check (read-only)
-                                                [24] IPTABLES / Packet Filter (read-only)
-                                                [25] Cron / Scheduled Tasks
+EXPORT / TRANSFER                            SYSTEM / VPN / UFW / IPTABLES / CRON
+────────────────────────────────────────     ────────────────────────────────────────
+[16] Tunnel backup / restore                 [20] Show system status
+[17] Create Debian peer bundle               [21] WireGuard
+[18] Transfer Debian peer bundle via SCP     [22] UFW
+[19] Import Debian peer bundle               [23] Access Check (read-only)
+                                              [24] IPTABLES / Packet Filter (read-only)
+                                              [25] Cron / Scheduled Tasks
 
-  [E] Exit
+[E] Exit
 ```
 
-## Quick start: UniFi Gateway ↔ Debian
+## Quick start
 
-Example values:
+### UniFi Gateway ↔ Debian
 
-| Item | Example |
-|---|---|
-| Debian public IPv4 | `198.51.100.10` |
-| UniFi public IPv4 | `203.0.113.20` |
-| Transfer network | `10.200.202.0/30` |
-| Debian VTI | `10.200.202.1` |
-| UniFi VTI | `10.200.202.2` |
-| UniFi LAN | `192.168.10.0/24` |
-| Authentication ID | `office-unifi` |
+1. Select **[2] Add S2S tunnel** and choose **UniFi Gateway**.
+2. Enter the public endpoints, unique `/30` transfer network and remote LANs.
+3. Review and install the Debian side.
+4. Open **[5] Show UniFi configuration** and enter the displayed values in UniFi.
+5. Confirm the connection with **[10] Tunnel diagnostics**.
 
-Use **[2] Add S2S tunnel**, choose **UniFi Gateway**, complete the wizard, install the tunnel, then use **[5] Show UniFi configuration** to obtain the matching values for UniFi. Verify it with **[10] Tunnel diagnostics**.
+### Debian ↔ Debian
 
-## Quick start: Debian ↔ Debian
+1. Create and install the tunnel on Server A using **[2]**.
+2. Create its mirrored peer bundle with **[17]**.
+3. Transfer it through **[18]**, or copy it through another protected channel.
+4. Import and install it on Server B using **[19]**.
+5. Verify both sides with **[10] Tunnel diagnostics**.
 
-Create the tunnel on Server A with **[2] Add S2S tunnel** and choose **Debian / strongSwan**. After saving/installing it, use **[17] Create Debian peer bundle** and **[18] Transfer Debian peer bundle via SCP**. On Server B use **[19] Import Debian peer bundle**, review the validation preview and install it. Finally use **[9] Reconnect tunnel** if necessary and **[10] Tunnel diagnostics** on both sides.
+### WireGuard
 
-## Quick start: WireGuard remote access
+1. Select **[21] WireGuard**.
+2. Create a managed server, or inspect/import an existing server first.
+3. Add a client and transfer its `.conf` file or scan its QR code.
+4. Verify the handshake and traffic counters in WireGuard diagnostics.
 
-Choose **[21] WireGuard**. On a new server, create a manager-owned WireGuard server. If `/etc/wireguard` already contains a server, first import it read-only, verify status, then migrate/take it over if desired.
+Manager-created clients receive one `/32` address inside the server's `/24` network. This is normal for an individual WireGuard peer. Full tunnel means `AllowedIPs = 0.0.0.0/0` for IPv4 Internet access through the server; it does not automatically permit every LAN behind an IPsec peer.
 
-For a managed server, open **WireGuard clients → Add client**. The generated client uses a `/32` address such as `10.250.0.2/32`; this is correct for an individual WireGuard peer even though the server owns the complete `/24` VPN network. The client receives `AllowedIPs = 0.0.0.0/0`, so IPv4 Internet traffic is sent through the VPN server.
+### UFW
 
-The client can then be imported using its generated `.conf` file or the QR-code view. Existing imported peers can remain connected and be removed/renamed in manager state after migration, but their original client private keys are not present on the server, so their complete client configuration and QR code cannot be reconstructed.
+1. Select **[22] UFW** and install it if necessary.
+2. Review the prepared SSH rule and add every required service/VPN rule.
+3. Display the complete stored rule set.
+4. Use the manager's safe activation option and keep the provider console available.
 
-## Quick start: UFW firewall management
+Ordinary UFW rule changes take effect immediately while UFW is active. Reload is normally unnecessary. Provider firewall rules must be configured separately.
 
-Choose **[22] UFW**. If UFW is installed, use **Show all firewall rules** to display its status/default policies and each active rule once in a numbered list. When UFW is inactive, it cannot supply numbered live rules; the manager converts its stored `ufw show added` commands into a readable `To / Action / From / Description` table instead. Common unrestricted and source-restricted TCP/UDP ALLOW rules are normalized. A complex command that cannot be interpreted safely is clearly marked and also shown unchanged.
+### Cron
 
-If UFW is missing, the manager can install it and prepare an allow rule for the detected SSH administration port. This first implementation deliberately leaves UFW disabled after installation. Review all required HTTP, HTTPS, IPsec, WireGuard and custom-service ports before enabling it manually or extending its rule set.
+1. Select **[25] Cron / Scheduled Tasks** and inspect the unified inventory.
+2. Add a job or explicitly take over an existing external entry.
+3. Review schedule, human-readable meaning, command, user and initial status.
+4. Use manual execution to test the command itself; use diagnostics/journal entries to confirm execution by cron.
 
-Permanent and temporary incoming ALLOW rules can be added for TCP or UDP. The guided form presents protocol, destination port, allowed source and description as four separate steps, with the relevant explanation immediately before each input. Use `B` in any step to cancel the wizard and return to UFW management, or `E` to exit the program. The source may be `any`, one plain IPv4 address or one IPv4 CIDR network. URL syntax such as `https://`, hostnames and values containing `:port` are not accepted in the source field.
+Managed blocks store adjacent `S2S-JOB`, `S2S-ENABLED` and `S2S-READABLE` comments. Disabled commands use `S2S-DISABLED`. The cron expression remains authoritative; editing or toggling a job regenerates an outdated readable comment.
 
-Temporary rules use an on-disk systemd timer and are highlighted in yellow with their expiry time. Permanent rules keep the normal UFW display without an additional label. The internal timer identifier is hidden from the user-facing rule list; only the entered description and `[TEMP until …]` are shown for temporary rules. The timer survives a reboot and removes the matching UFW rule at expiry. Rules can be deleted by number while UFW is active. The manager refuses to delete the detected current SSH rule and shows an additional warning for WireGuard, IKE, NAT-T and ESP rules.
+## State, configuration and backups
 
-The UFW menu can safely enable, disable and reload the firewall. Activation is refused unless a stored TCP rule covers the detected SSH administration port and, when available, the current SSH client address. Before `ENABLE` is accepted, all rules that will become active are shown again. The manager then verifies both live UFW status and `/etc/ufw/ufw.conf` boot activation. Disabling requires typing `DISABLE`, unloads UFW and disables it at boot while preserving stored rules. Reload is available only while active and repeats the SSH safety check; ordinary `ufw allow` and `ufw delete` operations take effect immediately and normally do not require it.
+Manager state is stored below:
 
-Choose **[23] Access Check** for a read-only server-side path analysis. Its own submenu remains open after a result. Select a managed WireGuard client or enter a custom source IPv4 network; for custom sources the manager lists all Linux interfaces with their IPv4 addresses and marks the interface suggested by the return route. The selected ingress interface is required for forwarded-route simulation and interface-specific firewall evaluation. Internet, host and CIDR destinations check a forwarded path. **Service on this Debian server** instead asks for TCP/UDP and a local port, verifies a non-loopback listener, and checks whether a matching UFW INPUT rule covers the selected source—including a broader source CIDR. A live explicit iptables FORWARD allow is evaluated together with UFW's routed default policy instead of treating UFW's default DENY as an automatic blocker. Results include a prominent `INTERNET ACCESS`, `ROUTED NETWORK ACCESS`, or `LOCAL SERVICE ACCESS` verdict. No check adds rules or sends traffic as the remote client; only a real test from that device can prove end-to-end access.
+```text
+/root/s2s-manager/
+```
 
-Choose **[24] IPTABLES / Packet Filter** to inspect the complete live IPv4 filter and NAT view without changing it. The guided packet-path analysis asks for the original address and port used by the client. If an exact DNAT rule such as a Docker publication is present, it displays the translated container address and explains that the packet traverses FORWARD rather than INPUT. It also shows the route and relevant live rule candidates. Because arbitrary ordered firewall rule sets cannot be proven safely by a short pattern match, this remains evidence-based diagnostics rather than a guaranteed end-to-end verdict.
+Important paths include:
 
-Reading the complete live rules can take a few seconds on systems using UFW, Docker or larger rule sets; the overview displays this before collecting its values. Invalid protocol input in the guided analysis is requested again immediately, and `B` remains available to cancel the check.
+```text
+/root/s2s-manager/tunnels/
+/root/s2s-manager/backups/
+/root/s2s-manager/wireguard/
+/root/s2s-manager/cron/backups/
+/etc/swanctl/conf.d/s2s-manager-<tunnel>.conf
+/usr/local/sbin/s2s-manager-vti-<tunnel>.sh
+/etc/systemd/system/s2s-manager-vti-<tunnel>.service
+/etc/wireguard/wg0.conf
+```
 
-Choose **[25] Cron / Scheduled Tasks** for the unified cron inventory and editor. Existing active entries remain unmanaged until explicitly taken over. A commented line is offered only when removing one comment prefix leaves a syntactically plausible cron entry, and takeover warns that it might instead be an example or old documentation. Manager blocks use adjacent `S2S-JOB`, `S2S-ENABLED` and `S2S-READABLE` comments; disabled commands use `S2S-DISABLED`. The real expression remains authoritative, and a stale readable comment is reported and regenerated by the next edit/status change.
+Peer bundles, tunnel backups, WireGuard client exports and QR codes may contain PSKs or private keys. Treat them like passwords and never publish them.
 
-The first write to a source inserts one exact `# S2S-MANAGER-CRON-FILE: 1` marker plus an explanatory header. Manual jobs, variables and comments remain allowed outside S2S blocks and are preserved. Each write creates a backup under `/root/s2s-manager/cron/backups/` and compares the source with the version selected in the UI, preventing a parallel `crontab -e` change from being overwritten.
+## Important limitations
 
-## Safety model
-
-The manager separates saved state from installed system configuration. Destructive operations show previews/confirmations, sensitive PSKs and WireGuard client keys are stored with restrictive permissions, existing tunnel/server take-over creates backups, and external bundle/backup data is parsed rather than executed as shell code.
-
-WireGuard migration automatically restores the configuration backed up immediately before migration if the newly generated managed configuration cannot start.
+- Every IPsec tunnel needs a unique, non-overlapping `/30` transfer network.
+- Overlapping remote routes are rejected because they make routing ambiguous.
+- A classic VTI has one concrete remote endpoint; DDNS names resolving to multiple IPv4 addresses are rejected.
+- Only one wildcard VTI endpoint can use the same Debian public IPv4.
+- A server-side Access Check provides configuration evidence, not an end-to-end packet test from the remote client.
+- Arbitrary ordered nftables/iptables rules cannot always be reduced to a guaranteed verdict.
+- Opening a local UFW port does not open the corresponding provider/cloud firewall.
+- The guest OS usually cannot determine whether KVM/QEMU is managed by Proxmox, OpenStack or another host platform.
 
 ## Documentation
 
-See **[MANUAL.md](MANUAL.md)** for the complete menu reference, UniFi/Debian walkthroughs, WireGuard workflows, firewall/packet-path diagnostics, cron management and troubleshooting.
-
-## Important notes
-
-- Every IPsec tunnel needs its own non-overlapping `/30` transfer network.
-- Do not create ambiguous overlapping remote routes.
-- A classic VTI has one concrete remote endpoint; DDNS names resolving to multiple IPv4 addresses are rejected.
-- Dynamic/unknown UniFi mode uses a wildcard VTI endpoint; only one wildcard VTI can use the same Debian public IPv4.
-- WireGuard manager-created clients use `/32` addresses by design.
-- Full-tunnel WireGuard currently means Internet access through the Debian server. It does **not** automatically grant access to all networks behind S2S peers.
-- Opening ports in UFW does not configure a provider/cloud firewall.
-- Peer bundles, backups and WireGuard client exports can contain secrets. Treat them like passwords.
+See [MANUAL.md](MANUAL.md) for the complete menu reference, detailed workflows, file formats, recovery guidance and troubleshooting.
 
 ## License
 
-Add the license you want to use for the project here before publishing the repository.
+No license has been published for this repository. Unless a license is added, normal copyright restrictions apply.
