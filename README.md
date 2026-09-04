@@ -181,7 +181,7 @@ Saved manager state and installed system configurations remain under `/root/s2s-
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.5.11                         ║
+║                       Version 1.5.12                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 State directory: /root/s2s-manager
@@ -310,7 +310,7 @@ Safety backups are retained until they are removed manually. Peer bundles, tunne
 
 ## Documentation
 
-See [MANUAL.md](MANUAL.md) for the complete menu reference, detailed workflows, file formats, recovery guidance and troubleshooting.
+Use the [S2S Manager Wiki](https://github.com/Nisbo/s2s-manager/wiki) as the navigable, detailed documentation. The repository's [MANUAL.md](MANUAL.md) remains available as a single-file/offline reference.
 
 ## License
 
