@@ -527,7 +527,7 @@ Collecting the overview can take a few seconds when UFW, Docker or many rules ar
 
 The **[25] Cron / Scheduled Tasks** menu reads every installed user crontab visible under Debian's cron spool, plus `/etc/crontab` and readable files in `/etc/cron.d/`. Executable files in `/etc/cron.hourly`, `cron.daily`, `cron.weekly` and `cron.monthly` appear in a separate informational list because they are scripts rather than normal five-field job lines.
 
-The overview classifies entries as `S2S`, `NO` or `POSSIBLE`. `S2S` is a contiguous managed metadata block. `NO` is an active external job. `POSSIBLE` is currently a comment whose content becomes a syntactically plausible job after removing one comment prefix. Prose such as `# Disabled because of maintenance` is not classified as a job. Taking over a possible entry requires confirmation and keeps it disabled.
+The overview classifies entries by type as `S2S`, `EXTERNAL` or `POSSIBLE`. `S2S` is a contiguous managed metadata block. `EXTERNAL` is an active job outside manager control. `POSSIBLE` is currently a comment whose content becomes a syntactically plausible job after removing one comment prefix. Prose such as `# Disabled because of maintenance` is not classified as a job. Taking over a possible entry requires confirmation and keeps it disabled.
 
 Managed blocks use this stable format:
 

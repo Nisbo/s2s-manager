@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.5.2"
+VERSION="1.5.3"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -11928,14 +11928,18 @@ cron_build_inventory() {
 }
 
 cron_print_inventory() {
-    local human="${1:-1}" i managed_label readable
+    local human="${1:-1}" i type_label readable display_name
     if (( CRON_JOB_COUNT == 0 )); then info "No regular cron jobs were found."; return; fi
-    printf '%-4s %-10s %-10s %-16s %-18s %s\n' "#" "Status" "Managed" "User" "Schedule" "Name / command"
+    printf '%-4s %-10s %-10s %-16s %-18s %s\n' "#" "Status" "Type" "User" "Schedule" "Name"
     printf '%-4s %-10s %-10s %-16s %-18s %s\n' "────" "──────────" "──────────" "────────────────" "──────────────────" "────────────────────────────────────────"
     for ((i=1; i<=CRON_JOB_COUNT; i++)); do
-        case "${CRON_JOB_MANAGED[$i]}" in yes) managed_label="S2S" ;; possible) managed_label="POSSIBLE" ;; *) managed_label="NO" ;; esac
-        printf '%-4s %-10s %-10s %-16s %-18s %s\n' "${i}" "${CRON_JOB_STATUS[$i]}" "${managed_label}" \
-            "${CRON_JOB_USER[$i]}" "${CRON_JOB_SCHEDULE[$i]}" "${CRON_JOB_NAME[$i]}"
+        case "${CRON_JOB_MANAGED[$i]}" in
+            yes) type_label="S2S"; display_name="${CRON_JOB_NAME[$i]}" ;;
+            possible) type_label="POSSIBLE"; display_name="" ;;
+            *) type_label="EXTERNAL"; display_name="" ;;
+        esac
+        printf '%-4s %-10s %-10s %-16s %-18s %s\n' "${i}" "${CRON_JOB_STATUS[$i]}" "${type_label}" \
+            "${CRON_JOB_USER[$i]}" "${CRON_JOB_SCHEDULE[$i]}" "${display_name}"
         if [[ "${human}" == "1" ]]; then
             readable="$(cron_schedule_readable "${CRON_JOB_SCHEDULE[$i]}")"
             printf '     %-12s %s\n' "Readable:" "${readable}"
@@ -12365,7 +12369,7 @@ cron_show_overview() {
     cron_build_inventory || { error "Cron sources could not be read."; pause; return; }
     cron_print_inventory "${CRON_HUMAN_READABLE}"
     cron_show_periodic_directories
-    echo; info "S2S = managed metadata block; NO = active unmanaged job; POSSIBLE = syntactically plausible commented job."
+    echo; info "S2S = managed job; EXTERNAL = active job outside manager control; POSSIBLE = plausible commented job."
     pause
 }
 
