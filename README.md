@@ -8,6 +8,7 @@ The project is intended for administrators who want guided, reviewable changes w
 
 ## Contents
 
+- [What is S2S Manager?](#what-is-s2s-manager)
 - [What it manages](#what-it-manages)
 - [Highlights](#highlights)
 - [Safety model](#safety-model)
@@ -19,6 +20,14 @@ The project is intended for administrators who want guided, reviewable changes w
 - [State, configuration and backups](#state-configuration-and-backups)
 - [Important limitations](#important-limitations)
 - [Documentation](#documentation)
+
+## What is S2S Manager?
+
+S2S Manager started as a personal collection of notes and copy-and-paste configuration blocks. Nisbo wanted to connect several Site-to-Site locations and needed a repeatable checklist that did not omit an address, route, firewall rule or strongSwan setting. The original motivation was constructive laziness: do the careful work once instead of repeating the same error-prone steps on every server.
+
+As more tunnels and VPS systems were added, the documentation gradually became an interactive script. Real operational needs then added Debian peer bundles, reconnection handling, WireGuard, UFW, access checks, packet-filter diagnostics, server information and cron management. Features are developed around actual use cases and tested both locally and on real Debian servers.
+
+The project has been designed and developed iteratively by Nisbo in collaboration with OpenAI's ChatGPT and Codex. Nisbo defines the requirements, tests behavior on the target systems and decides how the tool should work; the AI assists with analysis, implementation, automated tests and documentation. This is stated openly because the development history is part of the project, and AI assistance does not replace review or real-system testing for networking and firewall changes.
 
 ## What it manages
 
@@ -127,22 +136,42 @@ UFW, WireGuard, QR generation and cron support are optional until their correspo
 
 ## Install
 
-Log in as root (or open a root shell with `sudo -i`) and run the current script directly from GitHub:
+Log in as root or open a root shell with `sudo -i`. Choose either method below.
+
+### Run the current GitHub version directly
 
 ```bash
 bash <(curl -fsSL "https://raw.githubusercontent.com/Nisbo/s2s-manager/main/s2s-manager.sh?nocache=$(date +%s)")
 ```
 
-The cache-busting timestamp requests the current GitHub version. The script runs for this session; it is not copied to `/usr/local/bin` and no separate manager package is installed. Feature-specific Debian packages are offered only when required and always with a confirmation.
+The cache-busting timestamp requests the current GitHub version each time. The script runs for this session and is not saved as a local manager file.
+
+### Download and keep the script locally
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/Nisbo/s2s-manager/main/s2s-manager.sh?nocache=$(date +%s)" -o s2s-manager.sh
+chmod +x s2s-manager.sh
+./s2s-manager.sh
+```
+
+This stores `s2s-manager.sh` in the current directory so it can be started again later without downloading it. No manager package is installed and nothing is copied to `/usr/local/bin`. Feature-specific Debian packages are offered only when required and always with a confirmation.
 
 For security-sensitive environments, inspect the repository version before executing it as root.
 
 ## Update
 
-Run the same cache-free command again. The newly downloaded version is used immediately:
+If the manager is normally run directly, use the same command again; it downloads the current version every time:
 
 ```bash
 bash <(curl -fsSL "https://raw.githubusercontent.com/Nisbo/s2s-manager/main/s2s-manager.sh?nocache=$(date +%s)")
+```
+
+If `s2s-manager.sh` was saved locally, run these commands from the directory containing it:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/Nisbo/s2s-manager/main/s2s-manager.sh?nocache=$(date +%s)" -o s2s-manager.sh
+chmod +x s2s-manager.sh
+./s2s-manager.sh
 ```
 
 Saved manager state and installed system configurations remain under `/root/s2s-manager/` and the listed system paths. Running a newer script does not remove them. Review the version shown in the banner after updating.
@@ -152,7 +181,7 @@ Saved manager state and installed system configurations remain under `/root/s2s-
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.5.9                          ║
+║                       Version 1.5.10                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 State directory: /root/s2s-manager

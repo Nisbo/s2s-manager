@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.5.9"
+VERSION="1.5.10"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
