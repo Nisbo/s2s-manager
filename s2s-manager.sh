@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.5.0"
+VERSION="1.5.1"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -11778,6 +11778,15 @@ cron_parse_entry() {
     CRON_PARSED_COMMAND="${command}"
 }
 
+cron_is_documentation_example() {
+    local candidate="$1" normalized
+    normalized="$(awk '{$1=$1; print}' <<< "${candidate}")"
+    case "${normalized}" in
+        '* * * * * user-name command to be executed') return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 cron_schedule_readable() {
     local schedule="$1" minute hour dom month dow n
     case "${schedule}" in
@@ -11882,7 +11891,8 @@ cron_inventory_source() {
             CRON_JOB_READABLE_MATCH[${CRON_JOB_COUNT}]=na
         elif [[ "${line}" =~ ^[[:space:]]*#[[:space:]]+(.+)$ ]]; then
             candidate="${BASH_REMATCH[1]}"
-            if [[ "${candidate}" != S2S-* ]] && cron_parse_entry "${candidate}" "${system_format}"; then
+            if [[ "${candidate}" != S2S-* ]] && ! cron_is_documentation_example "${candidate}" && \
+               cron_parse_entry "${candidate}" "${system_format}"; then
                 schedule="${CRON_PARSED_SCHEDULE}"; command="${CRON_PARSED_COMMAND}"
                 job_user="${CRON_PARSED_USER:-${source_user}}"
                 cron_add_inventory_job "${source}" "${source_label}" "${hash}" "${i}" "${i}" possible DISABLED \
