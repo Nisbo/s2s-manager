@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.5.4"
+VERSION="1.5.5"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -11787,6 +11787,68 @@ cron_is_documentation_example() {
     esac
 }
 
+cron_normalize_weekday_token() {
+    local token
+    token="$(tr '[:lower:]' '[:upper:]' <<< "$1")"
+    case "${token}" in
+        0|7|SUN|SUNDAY|SO|SON|SONNTAG) printf '0' ;;
+        1|MON|MONDAY|MO|MONTAG) printf '1' ;;
+        2|TUE|TUESDAY|DI|DIE|DIENSTAG) printf '2' ;;
+        3|WED|WEDNESDAY|MI|MIT|MITTWOCH) printf '3' ;;
+        4|THU|THURSDAY|DO|DON|DONNERSTAG) printf '4' ;;
+        5|FRI|FRIDAY|FR|FRE|FREITAG) printf '5' ;;
+        6|SAT|SATURDAY|SA|SAM|SAMSTAG|SONNABEND) printf '6' ;;
+        *) return 1 ;;
+    esac
+}
+
+cron_normalize_weekdays() {
+    local input item first last normalized result="" seen="," part
+    local -a parts=()
+    input="$(tr -d '[:space:]' <<< "$1")"
+    [[ -n "${input}" && "${input}" != ,* && "${input}" != *, && "${input}" != *,,* ]] || return 1
+    IFS=',' read -r -a parts <<< "${input}"
+    for item in "${parts[@]}"; do
+        if [[ "${item}" == *-* ]]; then
+            [[ "${item}" != -* && "${item}" != *- && "${item#*-}" != *-* ]] || return 1
+            first="$(cron_normalize_weekday_token "${item%%-*}")" || return 1
+            last="$(cron_normalize_weekday_token "${item#*-}")" || return 1
+            (( first <= last )) || return 1
+            [[ "${first}" == "${last}" ]] && part="${first}" || part="${first}-${last}"
+        else
+            part="$(cron_normalize_weekday_token "${item}")" || return 1
+        fi
+        [[ "${seen}" == *",${part},"* ]] && continue
+        result="${result:+${result},}${part}"
+        seen+="${part},"
+    done
+    [[ -n "${result}" ]] || return 1
+    CRON_NORMALIZED_WEEKDAYS="${result}"
+}
+
+cron_weekday_name() {
+    case "$1" in
+        0|7) printf 'Sunday' ;; 1) printf 'Monday' ;; 2) printf 'Tuesday' ;; 3) printf 'Wednesday' ;;
+        4) printf 'Thursday' ;; 5) printf 'Friday' ;; 6) printf 'Saturday' ;; *) printf '%s' "$1" ;;
+    esac
+}
+
+cron_weekdays_readable() {
+    local value="$1" item first last result="" text
+    local -a parts=()
+    IFS=',' read -r -a parts <<< "${value}"
+    for item in "${parts[@]}"; do
+        if [[ "${item}" == *-* ]]; then
+            first="${item%%-*}"; last="${item#*-}"
+            text="$(cron_weekday_name "${first}") through $(cron_weekday_name "${last}")"
+        else
+            text="$(cron_weekday_name "${item}")"
+        fi
+        result="${result:+${result}, }${text}"
+    done
+    printf '%s' "${result}"
+}
+
 cron_schedule_readable() {
     local schedule="$1" minute hour dom month dow n
     case "${schedule}" in
@@ -11808,7 +11870,7 @@ cron_schedule_readable() {
         printf 'Every day at %02d:%02d' "$((10#${hour}))" "$((10#${minute}))"; return
     fi
     if [[ "${minute}" =~ ^[0-9]+$ && "${hour}" =~ ^[0-9]+$ && "${dom} ${month}" == "* *" && "${dow}" != "*" ]]; then
-        printf 'On weekday(s) %s at %02d:%02d' "${dow}" "$((10#${hour}))" "$((10#${minute}))"; return
+        printf 'On %s at %02d:%02d' "$(cron_weekdays_readable "${dow}")" "$((10#${hour}))" "$((10#${minute}))"; return
     fi
     if [[ "${minute}" =~ ^[0-9]+$ && "${hour}" =~ ^[0-9]+$ && "${dom}" =~ ^[0-9]+$ && "${month} ${dow}" == "* *" ]]; then
         printf 'Every month on day %s at %02d:%02d' "${dom}" "$((10#${hour}))" "$((10#${minute}))"; return
@@ -12156,7 +12218,33 @@ cron_prompt_schedule() {
             1) read -r -p "Interval in minutes (1-59): " minutes; cron_prompt_navigation "${minutes}" && return 1; [[ "${minutes}" =~ ^[0-9]+$ ]] && (( minutes >= 1 && minutes <= 59 )) || { error "Enter 1 through 59."; continue; }; value="*/${minutes} * * * *" ;;
             2) read -r -p "Minute within each hour (0-59) [0]: " minute; cron_prompt_navigation "${minute}" && return 1; minute="${minute:-0}"; [[ "${minute}" =~ ^[0-9]+$ ]] && (( minute <= 59 )) || { error "Enter 0 through 59."; continue; }; value="$((10#${minute})) * * * *" ;;
             3) read -r -p "Time (HH:MM): " value; cron_prompt_navigation "${value}" && return 1; [[ "${value}" =~ ^([01]?[0-9]|2[0-3]):([0-5][0-9])$ ]] || { error "Enter a valid 24-hour time."; continue; }; hour="${value%:*}"; minute="${value#*:}"; value="$((10#${minute})) $((10#${hour})) * * *" ;;
-            4) read -r -p "Weekdays (0-7 or names, comma-separated; 0/7=Sunday): " weekdays; cron_prompt_navigation "${weekdays}" && return 1; [[ "${weekdays}" =~ ^[0-7A-Za-z,-]+$ ]] || { error "Invalid weekday list."; continue; }; read -r -p "Time (HH:MM): " value; cron_prompt_navigation "${value}" && return 1; [[ "${value}" =~ ^([01]?[0-9]|2[0-3]):([0-5][0-9])$ ]] || { error "Enter a valid time."; continue; }; hour="${value%:*}"; minute="${value#*:}"; value="$((10#${minute})) $((10#${hour})) * * ${weekdays}" ;;
+            4)
+                echo
+                echo "Choose one or more weekdays. Sunday may be entered as 0 or 7; both"
+                echo "mean the same day. Numbers, English names and German names are accepted:"
+                echo
+                echo "  1  MON  MONDAY     MO  MONTAG       Monday"
+                echo "  2  TUE  TUESDAY    DI  DIENSTAG     Tuesday"
+                echo "  3  WED  WEDNESDAY  MI  MITTWOCH     Wednesday"
+                echo "  4  THU  THURSDAY   DO  DONNERSTAG   Thursday"
+                echo "  5  FRI  FRIDAY     FR  FREITAG      Friday"
+                echo "  6  SAT  SATURDAY   SA  SAMSTAG      Saturday"
+                echo "  0/7 SUN  SUNDAY     SO  SONNTAG      Sunday"
+                echo "      SONNABEND is also accepted as Saturday. Upper/lower case is ignored."
+                echo
+                echo "Separate individual days with commas; spaces and duplicates are cleaned up."
+                echo "Ranges are allowed with a hyphen. Examples: 1,3,5   MON-FRI   Di, Friday, 7"
+                while :; do
+                    read -r -p "Weekdays: " weekdays
+                    cron_prompt_navigation "${weekdays}" && return 1
+                    if cron_normalize_weekdays "${weekdays}"; then weekdays="${CRON_NORMALIZED_WEEKDAYS}"; break; fi
+                    error "Invalid weekdays. Use only the displayed values, comma lists or ascending ranges such as MON-FRI."
+                done
+                printf '%-24s %s\n' "Normalized weekdays:" "${weekdays}"
+                read -r -p "Time (HH:MM): " value; cron_prompt_navigation "${value}" && return 1
+                [[ "${value}" =~ ^([01]?[0-9]|2[0-3]):([0-5][0-9])$ ]] || { error "Enter a valid time."; continue; }
+                hour="${value%:*}"; minute="${value#*:}"; value="$((10#${minute})) $((10#${hour})) * * ${weekdays}"
+                ;;
             5) read -r -p "Day of month (1-31): " day; cron_prompt_navigation "${day}" && return 1; [[ "${day}" =~ ^[0-9]+$ ]] && (( day >= 1 && day <= 31 )) || { error "Enter 1 through 31."; continue; }; read -r -p "Time (HH:MM): " value; cron_prompt_navigation "${value}" && return 1; [[ "${value}" =~ ^([01]?[0-9]|2[0-3]):([0-5][0-9])$ ]] || { error "Enter a valid time."; continue; }; hour="${value%:*}"; minute="${value#*:}"; value="$((10#${minute})) $((10#${hour})) ${day} * *" ;;
             6) value="@reboot" ;;
             7) echo "Enter five cron fields, for example: 30 3 * * *"; read -r -p "Cron expression: " value; cron_prompt_navigation "${value}" && return 1; cron_validate_schedule "${value}" || { error "The cron expression is not valid or supported."; continue; } ;;

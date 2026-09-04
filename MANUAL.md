@@ -549,6 +549,8 @@ A disabled block stores its command unambiguously:
 
 The actual cron expression is authoritative. `S2S-READABLE` is generated for people; a mismatch caused by manual editing is displayed and corrected by the next manager edit or enable/disable operation. The `[H]` menu option controls whether calculated descriptions appear in the overview.
 
+The guided weekday schedule accepts numbers (`0` or `7` = Sunday, `1` = Monday through `6` = Saturday), complete English/German weekday names and the common abbreviations shown by the wizard. Comma lists may contain spaces, and ascending ranges such as `MON-FRI` are supported. The manager converts names to numbers, removes duplicate entries and rejects values outside the valid weekday range before showing the preview.
+
 The first write to each source inserts an explanatory header containing the exact marker `# S2S-MANAGER-CRON-FILE: 1`. Detection depends only on that exact line, not the complete explanatory text. A duplicate, damaged or unsupported marker blocks writing. Manual jobs, environment variables and comments may remain anywhere outside a contiguous S2S block; the manager does not reorder them.
 
 New jobs default to root but can target another existing user. Editing a system-format entry changes its user field. Moving a managed per-user job installs the target copy first, removes the original second and restores the target on failure. Commands are real shell commands and can have broad privileges; every wizard shows the exact command and user before writing. Manual execution requires typing `RUN`, refuses commands with unescaped cron `%` semantics and notes that it cannot reproduce every cron environment detail.
