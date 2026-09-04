@@ -62,9 +62,11 @@ IPsec management states include **DEFINED**, **MANAGED**, **IMPORTED** and **PAR
 
 ---
 
-# 3. Pre-flight setup
+# 3. Optional IPsec pre-flight setup
 
-On first use the manager checks Debian 13, root privileges, required strongSwan packages, `iproute2`, OpenSSL and route-based strongSwan preparation. It can install/repair missing prerequisites.
+The manager opens the complete main menu without forcing strongSwan installation or IPsec preparation. Cron, UFW, IPTABLES, WireGuard and system information can therefore be used on a server that does not use Site-to-Site IPsec.
+
+When an operation needs a live IPsec environment—such as installation, re-apply, reconnect, diagnostics, discovery or take-over—the manager checks Debian 13, root privileges, required strongSwan packages, `iproute2`, OpenSSL and route-based strongSwan preparation. If something is missing, a dedicated screen offers either a detailed read-only pre-flight check or explicitly confirmed installation/repair. Returning to the main menu changes nothing. Tunnel definitions and peer bundles can be prepared without installing strongSwan; installation is offered only when requested.
 
 IPsec requires UDP **500** and **4500**. WireGuard requires its configured UDP listen port, default **51820**. UFW support is optional. A provider/cloud firewall remains separate and must allow the same required traffic.
 

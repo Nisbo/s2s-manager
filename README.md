@@ -1,6 +1,6 @@
 # IPsec S2S Manager
 
-Interactive Bash management for route-based IKEv2/IPsec tunnels, WireGuard remote access, UFW, packet-path diagnostics and cron jobs on Debian 13.
+Interactive Bash management for route-based IKEv2/IPsec tunnels, WireGuard remote access, UFW, packet-path diagnostics and cron jobs on Debian 13. The manager can also be used without IPsec: it opens its complete main menu first and prepares feature-specific components only when they are selected.
 
 The project is intended for administrators who want guided, reviewable changes without hiding the underlying Linux configuration. It uses strongSwan/swanctl, VTI interfaces, routing table 220 and standard Debian services. Existing installations can be discovered and reviewed before the manager takes ownership.
 
@@ -128,12 +128,12 @@ Always keep an independent provider console available when changing remote netwo
 - Root privileges
 - Bash and standard Debian system tools
 - Internet/package access when dependencies must be installed
-- Public IPv4 or an appropriate routed/NAT environment
-- IPsec peers reachable on UDP 500 and UDP 4500
+- Public IPv4 or an appropriate routed/NAT environment when a VPN feature needs it
+- IPsec peers reachable on UDP 500 and UDP 4500 when IPsec is used
 - WireGuard listen port reachable when WireGuard is used (default UDP 51820)
-- SSH connectivity for direct Debian peer-bundle transfer
+- SSH connectivity when direct Debian peer-bundle transfer is used
 
-UFW, WireGuard, QR generation and cron support are optional until their corresponding feature is used. Provider/cloud firewalls remain outside the manager.
+strongSwan/IPsec, UFW, WireGuard, QR generation and cron support are optional until their corresponding feature is used. Starting the manager does not install strongSwan or force an IPsec pre-flight setup. Selecting an IPsec operation that requires a live IPsec environment opens a dedicated setup screen; the installation/repair still requires an explicit confirmation. Provider/cloud firewalls remain outside the manager.
 
 ## Install
 
@@ -178,6 +178,8 @@ chmod +x s2s-manager.sh
 Saved manager state and installed system configurations remain under `/root/s2s-manager/` and the listed system paths. Running a newer script does not remove them. Review the version shown in the banner after updating.
 
 ## Quick start
+
+The complete main menu is available immediately. If you only want to manage cron jobs, inspect IPTABLES, configure UFW, use WireGuard or view system information, select that section directly; no strongSwan/IPsec installation is required. Tunnel definitions can also be prepared and saved before the IPsec components are installed.
 
 ### UniFi Gateway ↔ Debian
 

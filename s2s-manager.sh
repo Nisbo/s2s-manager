@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 1.5.15
+# Version 2.0.0
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="1.5.15"
+VERSION="2.0.0"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -6528,13 +6528,12 @@ add_tunnel_definition() {
     fi
 
     echo
-    if preflight_ready; then
-        if confirm_yes_no "Install this tunnel on Debian now?" "N"; then
+    if confirm_yes_no "Install this tunnel on Debian now?" "N"; then
+        if ensure_ipsec_ready_for_action; then
             install_tunnel_system_config "${name}"
             return
         fi
-    else
-        warn "System prerequisites are not ready, so the tunnel definition was saved only."
+        info "The tunnel definition remains saved and can be installed later."
     fi
     pause
 }
@@ -10697,7 +10696,12 @@ import_debian_peer_bundle() {
     info "The tunnel is defined but not installed yet."
     echo
     if confirm_yes_no "Install this tunnel on Debian now?" "N"; then
-        install_tunnel_system_config "${internal}"
+        if ensure_ipsec_ready_for_action; then
+            install_tunnel_system_config "${internal}"
+        else
+            info "The imported definition remains saved and can be installed later."
+            pause
+        fi
     else
         info "You can install it later with 'Install tunnel on Debian'."
         if confirm_yes_no "Delete the imported bundle file now?" "N"; then
@@ -10712,15 +10716,21 @@ import_debian_peer_bundle() {
 # Menus
 # ==============================================================================
 
-setup_required_menu() {
-    while ! preflight_ready; do
-        banner
-        show_preflight || true
+ensure_ipsec_ready_for_action() {
+    preflight_ready && return 0
 
-        section "SETUP REQUIRED"
-        echo "  [1] Install / repair prerequisites"
-        echo "  [2] Run pre-flight check again"
-        echo "  [3] Discover / import existing tunnels"
+    while :; do
+        banner
+        section "IPSEC COMPONENTS REQUIRED"
+        echo "The selected operation requires a prepared strongSwan/IPsec environment."
+        echo "It is not required for Cron, UFW, IPTABLES, WireGuard or general system information."
+        echo
+        echo "Nothing is installed or changed unless you explicitly select setup below"
+        echo "and confirm its detailed preview."
+        echo
+        echo "  [1] Install / repair IPsec prerequisites"
+        echo "  [2] Show detailed IPsec pre-flight check"
+        echo "  [B] Back to main menu"
         echo "  [E] Exit"
         echo
 
@@ -10728,13 +10738,29 @@ setup_required_menu() {
         read -r -p "Selection: " choice
 
         case "${choice}" in
-            1) install_or_repair_prerequisites ;;
-            2) ;;
-            3) discover_existing_tunnels ;;
-            e|E|0) clear_screen; echo "Bye."; exit 0 ;;
+            1)
+                install_or_repair_prerequisites
+                if preflight_ready; then
+                    ok "IPsec components are ready. Continuing the selected operation."
+                    sleep 1
+                    return 0
+                fi
+                ;;
+            2)
+                show_preflight || true
+                pause
+                ;;
+            b|B|0|"") return 1 ;;
+            e|E) clear_screen; echo "Bye."; exit 0 ;;
             *) error "Invalid selection."; sleep 1 ;;
         esac
     done
+}
+
+run_ipsec_action() {
+    local action="$1"
+    ensure_ipsec_ready_for_action || return 0
+    "${action}"
 }
 
 # ==============================================================================
@@ -12650,6 +12676,12 @@ main_menu() {
         section "CONFIGURED TUNNELS"
         show_existing_tunnels
 
+        if ! preflight_ready; then
+            echo
+            info "IPsec components are not installed or not ready."
+            info "The other manager sections remain available; an IPsec operation offers setup when needed."
+        fi
+
         # General visual separator between the tunnel table and the menu groups.
         echo
         printf '%b' "${C_DIM}"
@@ -12725,14 +12757,14 @@ main_menu() {
             4) remove_remote_network ;;
             5) show_unifi_configuration ;;
             6) rename_tunnel_display_name ;;
-            7) install_defined_tunnel ;;
-            8) manual_reapply_tunnel ;;
-            9) manual_reconnect_tunnel ;;
-            10) show_tunnel_diagnostics ;;
+            7) run_ipsec_action install_defined_tunnel ;;
+            8) run_ipsec_action manual_reapply_tunnel ;;
+            9) run_ipsec_action manual_reconnect_tunnel ;;
+            10) run_ipsec_action show_tunnel_diagnostics ;;
             11) remove_installed_tunnel ;;
             12) delete_tunnel_completely ;;
-            13) discover_existing_tunnels ;;
-            14) takeover_imported_tunnel ;;
+            13) run_ipsec_action discover_existing_tunnels ;;
+            14) run_ipsec_action takeover_imported_tunnel ;;
             15) show_takeover_backups ;;
             16) tunnel_backup_menu ;;
             17) create_debian_peer_bundle ;;
@@ -12783,7 +12815,6 @@ main() {
         sleep 2
     fi
 
-    setup_required_menu
     main_menu
 }
 
