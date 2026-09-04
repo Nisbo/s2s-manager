@@ -1,5 +1,7 @@
 # S2S Manager Manual
 
+**English** | [Deutsch](https://github.com/Nisbo/s2s-manager/wiki/DE---Komplettes-Handbuch)
+
 The complete and actively maintained S2S Manager documentation is available in the GitHub Wiki:
 
 - [S2S Manager Wiki](https://github.com/Nisbo/s2s-manager/wiki)

@@ -1,5 +1,7 @@
 # IPsec S2S Manager
 
+**English** | [Deutsch](README.de.md)
+
 Interactive Bash management for route-based IKEv2/IPsec tunnels, WireGuard remote access, UFW, packet-path diagnostics and cron jobs on Debian 13. The manager can also be used without IPsec: it opens its complete main menu first and prepares feature-specific components only when they are selected.
 
 The project is intended for administrators who want guided, reviewable changes without hiding the underlying Linux configuration. It uses strongSwan/swanctl, VTI interfaces, routing table 220 and standard Debian services. Existing installations can be discovered and reviewed before the manager takes ownership.
@@ -274,7 +276,7 @@ Safety backups are retained until they are removed manually. Peer bundles, tunne
 
 ## Documentation
 
-Use the [S2S Manager Wiki](https://github.com/Nisbo/s2s-manager/wiki) as the complete and actively maintained documentation. The repository's [MANUAL.md](MANUAL.md) is intentionally a short compatibility pointer so existing links continue to work without maintaining a second, potentially outdated manual.
+Use the [English S2S Manager Wiki](https://github.com/Nisbo/s2s-manager/wiki) or the [German documentation portal](https://github.com/Nisbo/s2s-manager/wiki/DE---Startseite) for the complete and actively maintained documentation. The repository's [MANUAL.md](MANUAL.md) is intentionally a short compatibility pointer so existing links continue to work without maintaining a second, potentially outdated manual.
 
 ## License
 
