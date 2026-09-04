@@ -181,7 +181,7 @@ Saved manager state and installed system configurations remain under `/root/s2s-
 ```text
 ╔══════════════════════════════════════════════════════════════╗
 ║                      IPsec S2S Manager                       ║
-║                       Version 1.5.12                         ║
+║                       Version 1.5.13                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 State directory: /root/s2s-manager
