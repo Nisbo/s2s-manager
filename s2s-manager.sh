@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 2.2.0
+# Version 2.2.1
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="2.2.0"
+VERSION="2.2.1"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -13103,7 +13103,16 @@ samba_edit_managed_share() {
     path="$(awk -F'= ' '$1 ~ /^[[:space:]]*path[[:space:]]*$/ {print $2; exit}' <<< "${current}")"
     group="$(awk -F'= ' '$1 ~ /^[[:space:]]*force group[[:space:]]*$/ {print $2; exit}' <<< "${current}")"
     if [[ -z "${group}" ]]; then group="$(awk -F'= ' '$1 ~ /^[[:space:]]*valid users[[:space:]]*$/ {for(i=2;i<=NF;i++) if($i ~ /^@/) {sub(/^@/,"",$i); print $i; exit}}' <<< "${current}")"; fi
-    echo "Editing converts this managed share to the standard shared-workspace profile."
+    cat <<EOF
+This editor rewrites the share using the S2S Manager standard shared-workspace
+profile. Options outside that profile are not retained. The share directory and
+its existing files are not changed.
+
+Press ENTER to keep each value shown in brackets, or enter a replacement value.
+Nothing is written until the final preview is confirmed. To cancel safely, keep
+the displayed values with ENTER and answer No at the final confirmation.
+EOF
+    echo
     read -r -p "Directory [${path}]: " choice; path="${choice:-${path}}"
     [[ -d "${path}" ]] || { error "The directory must already exist when editing a share."; pause; return; }
     samba_path_resolves_safely "${path}" || { error "The path is not a direct canonical directory below /srv."; pause; return; }
