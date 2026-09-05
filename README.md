@@ -2,7 +2,7 @@
 
 **English** | [Deutsch](README.de.md)
 
-Interactive Bash management for route-based IKEv2/IPsec tunnels, WireGuard remote access, UFW, packet-path diagnostics and cron jobs on Debian 13. The manager can also be used without IPsec: it opens its complete main menu first and prepares feature-specific components only when they are selected.
+Interactive Bash management for route-based IKEv2/IPsec tunnels, WireGuard remote access, UFW, packet-path diagnostics, cron jobs and Samba shares on Debian 13. The manager can also be used without IPsec: it opens its complete main menu first and prepares feature-specific components only when they are selected.
 
 The project is intended for administrators who want guided, reviewable changes without hiding the underlying Linux configuration. It uses strongSwan/swanctl, VTI interfaces, routing table 220 and standard Debian services. Existing installations can be discovered and reviewed before the manager takes ownership.
 
@@ -43,6 +43,7 @@ I have designed and developed the project iteratively in collaboration with Open
 | Access Check | 23 | Read-only route, firewall, NAT and local-service analysis |
 | IPTABLES | 24 | Read-only filter, NAT, Docker and packet-path diagnostics |
 | Cron | 25 | Inventory and management of scheduled tasks |
+| Samba | 26 | Existing-share discovery/take-over, group workspaces, users and diagnostics |
 
 ## Highlights
 
@@ -106,6 +107,16 @@ I have designed and developed the project iteratively in collaboration with Open
 - Back up every affected source under `/root/s2s-manager/cron/backups/` and abort after concurrent external changes
 - Diagnose the cron service, users, commands, permissions and recent journal entries
 
+### Samba / file shares
+
+- Optional installation; opening the manager or Samba menu installs nothing
+- Effective inventory with `SYSTEM`, `EXTERNAL` and `S2S` classification
+- Treat `[homes]`, `[printers]`, `[print$]` and runtime `IPC$` as system features
+- Controlled take-over of a uniquely located external share while preserving effective `testparm` settings
+- Manager-owned group workspaces in `/etc/samba/s2s-manager-shares.conf`
+- Normal Linux/Samba users and Samba-only accounts with a `nologin` shell
+- Backups under `/root/s2s-manager/samba/backups/`, validation before reload and automatic rollback
+
 ## Safety model
 
 The manager runs as root because it configures system networking and services. It therefore treats every write as an administrative operation:
@@ -116,6 +127,7 @@ The manager runs as root because it configures system networking and services. I
 - IPsec take-over creates timestamped backups under `/root/s2s-manager/backups/`.
 - WireGuard migration creates backups under `/root/s2s-manager/wireguard/backups/`.
 - Cron changes create source backups under `/root/s2s-manager/cron/backups/`.
+- Samba changes create configuration backups under `/root/s2s-manager/samba/backups/`.
 - WireGuard migration attempts automatic rollback after a failed start.
 - Cron writes compare the selected source with its current hash to avoid overwriting parallel edits.
 - UFW activation is refused without a suitable SSH safety rule.
@@ -135,7 +147,7 @@ Always keep an independent provider console available when changing remote netwo
 - WireGuard listen port reachable when WireGuard is used (default UDP 51820)
 - SSH connectivity when direct Debian peer-bundle transfer is used
 
-strongSwan/IPsec, UFW, WireGuard, QR generation and cron support are optional until their corresponding feature is used. Starting the manager does not install strongSwan or force an IPsec pre-flight setup. Selecting an IPsec operation that requires a live IPsec environment opens a dedicated setup screen; the installation/repair still requires an explicit confirmation. Provider/cloud firewalls remain outside the manager.
+strongSwan/IPsec, UFW, WireGuard, QR generation, cron and Samba support are optional until their corresponding feature is used. Starting the manager does not install strongSwan or force an IPsec pre-flight setup. Selecting an IPsec operation that requires a live IPsec environment opens a dedicated setup screen; the installation/repair still requires an explicit confirmation. Provider/cloud firewalls remain outside the manager.
 
 ## Install
 
@@ -181,7 +193,7 @@ Saved manager state and installed system configurations remain under `/root/s2s-
 
 ## Quick start
 
-The complete main menu is available immediately. If you only want to manage cron jobs, inspect IPTABLES, configure UFW, use WireGuard or view system information, select that section directly; no strongSwan/IPsec installation is required. Tunnel definitions can also be prepared and saved before the IPsec components are installed.
+The complete main menu is available immediately. If you only want to manage cron jobs, inspect IPTABLES, configure UFW, use WireGuard, manage Samba or view system information, select that section directly; no strongSwan/IPsec installation is required. Tunnel definitions can also be prepared and saved before the IPsec components are installed.
 
 ### UniFi Gateway ↔ Debian
 
@@ -226,6 +238,15 @@ Ordinary UFW rule changes take effect immediately while UFW is active. Reload is
 
 Managed blocks store adjacent `S2S-JOB`, `S2S-ENABLED` and `S2S-READABLE` comments. Disabled commands use `S2S-DISABLED`. The cron expression remains authoritative; editing or toggling a job regenerates an outdated readable comment.
 
+### Samba
+
+1. Select **[26] Samba / File Shares** and inspect all effective shares.
+2. Keep `[homes]`, printer shares and `IPC$` system-owned; take over an ordinary external share only when its source is unique.
+3. Create or edit a shared group workspace and assign Linux/Samba users to its group.
+4. Check permissions and diagnostics; allow TCP 445 only from trusted LAN/VPN sources.
+
+Manager shares live in `/etc/samba/s2s-manager-shares.conf`. Removing one keeps its directory and files. Per-user home-share policies, printers, Active Directory, guest shares, SMB1 and recursive permission rewrites are intentionally outside this first version.
+
 ## State, configuration and backups
 
 Manager state is stored below:
@@ -244,6 +265,7 @@ Important paths include:
 /root/s2s-manager/wireguard/backups/
 /root/s2s-manager/wireguard/exports/
 /root/s2s-manager/cron/backups/
+/root/s2s-manager/samba/backups/
 /etc/swanctl/conf.d/s2s-manager-<tunnel>.conf
 /usr/local/sbin/s2s-manager-vti-<tunnel>.sh
 /etc/systemd/system/s2s-manager-vti-<tunnel>.service
@@ -260,6 +282,7 @@ Backup locations by operation:
 | WireGuard migration/network-change backups | `/root/s2s-manager/wireguard/backups/` |
 | Generated WireGuard client files | `/root/s2s-manager/wireguard/exports/` |
 | Cron source backups | `/root/s2s-manager/cron/backups/` |
+| Samba configuration backups | `/root/s2s-manager/samba/backups/` |
 
 Safety backups are retained until they are removed manually. Peer bundles, tunnel backups, WireGuard client exports and QR codes may contain PSKs or private keys. Treat them like passwords and never publish them.
 

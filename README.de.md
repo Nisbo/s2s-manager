@@ -2,7 +2,7 @@
 
 [English](README.md) | **Deutsch**
 
-Interaktive Bash-Verwaltung für routenbasierte IKEv2/IPsec-Tunnel, WireGuard-Fernzugriff, UFW, Paketpfad-Diagnosen und Cronjobs unter Debian 13. Der Manager lässt sich auch ohne IPsec nutzen: Das vollständige Hauptmenü öffnet sich sofort und funktionsbezogene Komponenten werden erst bei Bedarf angeboten.
+Interaktive Bash-Verwaltung für routenbasierte IKEv2/IPsec-Tunnel, WireGuard-Fernzugriff, UFW, Paketpfad-Diagnosen, Cronjobs und Samba-Freigaben unter Debian 13. Der Manager lässt sich auch ohne IPsec nutzen: Das vollständige Hauptmenü öffnet sich sofort und funktionsbezogene Komponenten werden erst bei Bedarf angeboten.
 
 Das Projekt richtet sich an Administratoren, die geführte und nachvollziehbare Änderungen wünschen, ohne dass die zugrunde liegende Linux-Konfiguration verborgen wird. Vorhandene Installationen können zunächst schreibgeschützt erkannt und geprüft werden.
 
@@ -42,6 +42,7 @@ Ich habe das Projekt iterativ zusammen mit OpenAIs ChatGPT und Codex entworfen u
 | Access Check | 23 | Schreibgeschützte Analyse von Routen, Firewall, NAT und Diensten |
 | IPTABLES | 24 | Schreibgeschützte Filter-, NAT-, Docker- und Paketpfad-Diagnose |
 | Cron | 25 | Übersicht und Verwaltung geplanter Aufgaben |
+| Samba | 26 | Erkennung/Übernahme vorhandener Shares, Gruppenbereiche, Benutzer und Diagnose |
 
 ## Wichtige Funktionen
 
@@ -80,6 +81,16 @@ Ich habe das Projekt iterativ zusammen mit OpenAIs ChatGPT und Codex entworfen u
 - Vollständige Quell-Backups unter `/root/s2s-manager/cron/backups/`
 - Schutz vor dem Überschreiben zwischenzeitlicher externer Änderungen
 
+### Samba
+
+- Optionale Installation; das Öffnen installiert nichts
+- Effektive Freigaben als `SYSTEM`, `EXTERNAL` oder `S2S` anzeigen
+- `[homes]`, `[printers]`, `[print$]` und `IPC$` als Systemfunktionen behandeln
+- Eindeutig gefundene externe Shares mit ihren wirksamen `testparm`-Werten übernehmen
+- Gemeinsame Gruppenbereiche in `/etc/samba/s2s-manager-shares.conf`
+- Normale Linux-/Samba-Benutzer und Samba-only-Konten mit `nologin`
+- Backups unter `/root/s2s-manager/samba/backups/`, Prüfung vor Reload und automatischer Rollback
+
 ## Sicherheitsmodell
 
 Der Manager läuft als root, weil er Systemnetzwerk und Dienste konfigurieren kann. Deshalb gilt:
@@ -88,6 +99,7 @@ Der Manager läuft als root, weil er Systemnetzwerk und Dienste konfigurieren ka
 - Kritische Änderungen zeigen eine Vorschau und verlangen eine Bestätigung.
 - Vorhandene IPsec-, WireGuard- und Cron-Konfigurationen werden zuerst schreibgeschützt importiert.
 - Übernahmen und Änderungen erzeugen Backups; deren Pfad wird angezeigt.
+- Samba-Änderungen sichern die betroffenen Konfigurationsdateien vor dem Schreiben.
 - UFW wird ohne passende SSH-Sicherheitsregel nicht aktiviert.
 - Access Check und IPTABLES sind schreibgeschützt.
 - Geheimnisse besitzen restriktive Dateirechte und werden in normalen Statusansichten nicht ausgegeben.
@@ -103,7 +115,7 @@ Halte bei Änderungen an Remote-Netzwerk oder Firewall immer eine unabhängige P
 - Erreichbare UDP-Ports 500/4500 für IPsec beziehungsweise der gewählte WireGuard-Port
 - SSH nur für die direkte Übertragung von Debian-Peer-Bundles
 
-strongSwan/IPsec, UFW, WireGuard, QR-Erzeugung und Cron-Unterstützung sind bis zur Nutzung der jeweiligen Funktion optional. Beim Start wird nichts davon automatisch installiert. Provider-Firewalls bleiben außerhalb des Managers.
+strongSwan/IPsec, UFW, WireGuard, QR-Erzeugung, Cron und Samba sind bis zur Nutzung der jeweiligen Funktion optional. Beim Start wird nichts davon automatisch installiert. Provider-Firewalls bleiben außerhalb des Managers.
 
 ## Start und Aktualisierung
 
@@ -125,7 +137,7 @@ Zur Aktualisierung einer lokalen Kopie dieselben drei Befehle erneut im betreffe
 
 ## Schnellstart
 
-Das Hauptmenü ist sofort verfügbar. Wer nur Cron, IPTABLES, UFW, WireGuard oder Systeminformationen benötigt, wählt den Bereich direkt; strongSwan ist dafür nicht erforderlich.
+Das Hauptmenü ist sofort verfügbar. Wer nur Cron, IPTABLES, UFW, WireGuard, Samba oder Systeminformationen benötigt, wählt den Bereich direkt; strongSwan ist dafür nicht erforderlich.
 
 ### UniFi ↔ Debian
 
@@ -149,6 +161,15 @@ Das Hauptmenü ist sofort verfügbar. Wer nur Cron, IPTABLES, UFW, WireGuard ode
 - **[22] UFW:** SSH-Sicherheitsregel und alle benötigten Regeln prüfen, bevor die geschützte Aktivierung verwendet wird.
 - **[25] Cron:** Gesamtübersicht öffnen, Job anlegen oder übernehmen und Ausführung über Diagnose beziehungsweise Journal bestätigen.
 
+### Samba
+
+1. **[26] Samba / File Shares** öffnen und effektive Freigaben prüfen.
+2. `[homes]`, Druckerfreigaben und `IPC$` als Systemobjekte belassen; nur eindeutig gefundene externe statische Shares übernehmen.
+3. Gemeinsamen Gruppenbereich erstellen/bearbeiten und Linux-/Samba-Benutzer seiner Gruppe zuordnen.
+4. Pfad/Berechtigungen und Diagnose prüfen; TCP 445 nur für vertrauenswürdige LAN-/VPN-Quellen freigeben.
+
+Das Entfernen einer Manager-Freigabe behält Verzeichnis und Dateien. Persönliche Home-Share-Regeln, Drucker, Active Directory, Gastfreigaben, SMB1 und rekursive Rechteänderungen gehören bewusst noch nicht zu dieser Version.
+
 ## Zustand, Konfiguration und Backups
 
 Zentraler Manager-Zustand: `/root/s2s-manager/`
@@ -161,6 +182,7 @@ Zentraler Manager-Zustand: `/root/s2s-manager/`
 | WireGuard-Zustand und Backups | `/root/s2s-manager/wireguard/` |
 | WireGuard-Clientexporte | `/root/s2s-manager/wireguard/exports/` |
 | Cron-Quellbackups | `/root/s2s-manager/cron/backups/` |
+| Samba-Konfigurationsbackups | `/root/s2s-manager/samba/backups/` |
 
 PSKs, private Schlüssel, Clientexporte, QR-Codes und Peer-Bundles sind Geheimnisse. Nicht veröffentlichen oder in öffentliche Tickets kopieren.
 

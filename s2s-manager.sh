@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 2.1.0
+# Version 2.2.0
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -73,6 +73,13 @@ UFW_TIMER_PREFIX="s2s-manager-ufw-temp"
 CRON_STATE_DIR="${STATE_DIR}/cron"
 CRON_BACKUP_DIR="${CRON_STATE_DIR}/backups"
 CRON_HEADER_MARKER="# S2S-MANAGER-CRON-FILE: 1"
+
+SAMBA_STATE_DIR="${STATE_DIR}/samba"
+SAMBA_BACKUP_DIR="${SAMBA_STATE_DIR}/backups"
+SAMBA_SHARE_DIR="${SAMBA_STATE_DIR}/shares"
+SAMBA_CONFIG="/etc/samba/smb.conf"
+SAMBA_MANAGER_CONFIG="/etc/samba/s2s-manager-shares.conf"
+SAMBA_INCLUDE_LINE="include = ${SAMBA_MANAGER_CONFIG}"
 
 SWANCTL_DIR="/etc/swanctl/conf.d"
 MANAGED_PREFIX="s2s-manager"
@@ -376,10 +383,12 @@ ensure_root() {
 init_state_dirs() {
     mkdir -p "${TUNNEL_DIR}" "${ROUTE_DIR}" "${SECRET_DIR}" "${BACKUP_DIR}" "${EXPORT_DIR}" \
         "${WG_DIR}" "${WG_CLIENT_DIR}" "${WG_CLIENT_EXPORT_DIR}" "${WG_BACKUP_DIR}" \
-        "${UFW_STATE_DIR}" "${UFW_TEMP_DIR}" "${CRON_STATE_DIR}" "${CRON_BACKUP_DIR}"
+        "${UFW_STATE_DIR}" "${UFW_TEMP_DIR}" "${CRON_STATE_DIR}" "${CRON_BACKUP_DIR}" \
+        "${SAMBA_STATE_DIR}" "${SAMBA_BACKUP_DIR}" "${SAMBA_SHARE_DIR}"
     chmod 700 "${STATE_DIR}" "${TUNNEL_DIR}" "${ROUTE_DIR}" "${SECRET_DIR}" "${BACKUP_DIR}" "${EXPORT_DIR}" \
         "${WG_DIR}" "${WG_CLIENT_DIR}" "${WG_CLIENT_EXPORT_DIR}" "${WG_BACKUP_DIR}" \
-        "${UFW_STATE_DIR}" "${UFW_TEMP_DIR}" "${CRON_STATE_DIR}" "${CRON_BACKUP_DIR}"
+        "${UFW_STATE_DIR}" "${UFW_TEMP_DIR}" "${CRON_STATE_DIR}" "${CRON_BACKUP_DIR}" \
+        "${SAMBA_STATE_DIR}" "${SAMBA_BACKUP_DIR}" "${SAMBA_SHARE_DIR}"
 }
 
 debian_major_version() {
@@ -9336,7 +9345,7 @@ show_system_status() {
     if [[ -n "$(table220_default_route)" ]]; then
         error "Table 220 contains a default route that can shadow local Docker/VM networks."
         printf '    %s\n' "$(table220_default_route)"
-        info "Re-apply an installed tunnel or restart the manager to repair it safely."
+        info "Re-apply an installed tunnel to regenerate its explicit routes after reviewing the configuration."
     else
         ok "Table 220 has no catch-all default route; unmatched traffic falls through to main."
     fi
@@ -9366,6 +9375,16 @@ show_system_status() {
         info "Local UFW not installed (optional)"
         echo "External/provider firewall can be used instead."
         echo "Required for IPsec: UDP 500 and UDP 4500"
+    fi
+
+    echo
+    section "SAMBA"
+    if samba_installed; then
+        samba_service_active && ok "Samba installed and smbd active" || warn "Samba installed but smbd not active"
+        printf '%-28s %s\n' "Effective shares:" "$(samba_effective_share_names 2>/dev/null | wc -l)"
+        printf '%-28s %s\n' "Manager-owned shares:" "$(find "${SAMBA_SHARE_DIR}" -maxdepth 1 -type f -name '*.share' 2>/dev/null | wc -l)"
+    else
+        info "Samba not installed (optional)"
     fi
 
     pause
@@ -12668,6 +12687,534 @@ EOF
 
 # End cron / scheduled-task management
 
+# ==============================================================================
+# Samba / file-share management
+# ==============================================================================
+
+samba_installed() {
+    command_available smbd && command_available testparm
+}
+
+samba_service_active() {
+    systemctl is-active --quiet smbd 2>/dev/null
+}
+
+valid_samba_share_name() {
+    local value="$1"
+    (( ${#value} >= 1 && ${#value} <= 64 )) || return 1
+    [[ "${value}" =~ ^[A-Za-z0-9][A-Za-z0-9._\ -]*$ ]] || return 1
+    case "${value,,}" in global|homes|printers|print\$|ipc\$) return 1 ;; esac
+}
+
+valid_samba_group_name() {
+    [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
+valid_new_samba_path() {
+    local value="$1"
+    [[ "${value}" == /srv/* && "${value}" != *$'\n'* && "${value}" != *$'\r'* ]] || return 1
+    [[ "${value}" =~ ^/srv/[A-Za-z0-9._/-]+$ ]] || return 1
+    [[ "${value}" != *'/../'* && "${value}" != */.. && "${value}" != *'//'* ]]
+}
+
+samba_path_resolves_safely() {
+    local value="$1" resolved
+    resolved="$(readlink -m -- "${value}" 2>/dev/null)" || return 1
+    [[ "${resolved}" == "${value}" && "${resolved}" == /srv/* ]]
+}
+
+samba_system_share() {
+    case "${1,,}" in homes|printers|print\$|ipc\$) return 0 ;; *) return 1 ;; esac
+}
+
+samba_effective_config() {
+    testparm -s "${SAMBA_CONFIG}" 2>/dev/null
+}
+
+samba_effective_share_names() {
+    samba_effective_config | awk '/^\[[^]]+\]$/ { name=substr($0,2,length($0)-2); if (tolower(name)!="global") print name }'
+}
+
+samba_share_is_managed() {
+    local name="$1"
+    [[ -f "${SAMBA_SHARE_DIR}/${name}.share" ]] || return 1
+    grep -Fqx "# S2S-SHARE: ${name}" "${SAMBA_MANAGER_CONFIG}" 2>/dev/null
+}
+
+samba_effective_share_block() {
+    local wanted="$1"
+    samba_effective_config | awk -v wanted="${wanted}" '
+        /^\[[^]]+\]$/ {
+            name=substr($0,2,length($0)-2)
+            active=(tolower(name)==tolower(wanted))
+        }
+        active { print }
+    '
+}
+
+samba_find_raw_share_source() {
+    local wanted="$1" file count=0 found=""
+    while IFS= read -r file; do
+        if awk -v wanted="${wanted}" '
+            /^\[[^]]+\][[:space:]]*$/ {
+                name=$0; sub(/^[[:space:]]*\[/,"",name); sub(/\][[:space:]]*$/,"",name)
+                if (tolower(name)==tolower(wanted)) found=1
+            }
+            END { exit(found ? 0 : 1) }
+        ' "${file}"; then
+            count=$((count + 1)); found="${file}"
+        fi
+    done < <(find /etc/samba -maxdepth 2 -type f \( -name '*.conf' -o -name 'smb.conf' \) 2>/dev/null | sort)
+    (( count == 1 )) || return 1
+    printf '%s' "${found}"
+}
+
+samba_backup_file() {
+    local file="$1" label="$2" stamp target mode uid gid
+    stamp="$(date +%Y%m%d-%H%M%S)-${RANDOM}"
+    target="${SAMBA_BACKUP_DIR}/${label}-${stamp}.bak"
+    if [[ -e "${file}" ]]; then
+        mode="$(stat -c '%a' "${file}")"; uid="$(stat -c '%u' "${file}")"; gid="$(stat -c '%g' "${file}")"
+        cp -a -- "${file}" "${target}"
+        printf 'MODE=%s\nUID_VALUE=%s\nGID_VALUE=%s\n' "${mode}" "${uid}" "${gid}" > "${target}.meta"
+        chmod 600 "${target}.meta"
+    else : > "${target}.absent"; target="${target}.absent"; fi
+    chmod 600 "${target}"
+    printf '%s' "${target}"
+}
+
+samba_restore_backup() {
+    local backup="$1" target="$2" mode uid gid
+    [[ -f "${backup}" && -f "${backup}.meta" ]] || return 1
+    mode="$(awk -F= '$1=="MODE" {print $2}' "${backup}.meta")"
+    uid="$(awk -F= '$1=="UID_VALUE" {print $2}' "${backup}.meta")"
+    gid="$(awk -F= '$1=="GID_VALUE" {print $2}' "${backup}.meta")"
+    [[ "${mode}" =~ ^[0-7]{3,4}$ && "${uid}" =~ ^[0-9]+$ && "${gid}" =~ ^[0-9]+$ ]] || return 1
+    install -m "${mode}" "${backup}" "${target}" && chown "${uid}:${gid}" "${target}"
+}
+
+samba_ensure_manager_include() {
+    if awk -v wanted="${SAMBA_INCLUDE_LINE}" '
+        /^\[[^]]+\][[:space:]]*$/ { section=tolower($0); in_global=(section=="[global]") }
+        { line=$0; sub(/^[[:space:]]*/,"",line); sub(/[[:space:]]*$/,"",line); if (in_global && line==wanted) found=1 }
+        END { exit(found ? 0 : 1) }
+    ' "${SAMBA_CONFIG}"; then return 0; fi
+    if grep -Fq "${SAMBA_INCLUDE_LINE}" "${SAMBA_CONFIG}" 2>/dev/null; then
+        error "The manager include already exists outside [global]; refusing to create an ambiguous configuration."
+        return 1
+    fi
+    local temp
+    temp="$(mktemp "${SAMBA_CONFIG}.s2s.XXXXXX")" || return 1
+    awk -v include_line="   ${SAMBA_INCLUDE_LINE}" '
+        BEGIN { inserted=0; in_global=0 }
+        /^\[global\][[:space:]]*$/ { in_global=1; print; next }
+        /^\[[^]]+\][[:space:]]*$/ && in_global && !inserted { print include_line; print ""; inserted=1; in_global=0 }
+        { print }
+        END { if (!inserted && in_global) { print include_line } }
+    ' "${SAMBA_CONFIG}" > "${temp}"
+    if ! grep -Fq "${SAMBA_INCLUDE_LINE}" "${temp}"; then rm -f -- "${temp}"; return 1; fi
+    install -m 0644 "${temp}" "${SAMBA_CONFIG}"
+    rm -f -- "${temp}"
+}
+
+samba_write_managed_share() {
+    local name="$1" path="$2" group="$3" state="${SAMBA_SHARE_DIR}/${name}.share"
+    mkdir -p "${SAMBA_SHARE_DIR}"
+    touch "${SAMBA_MANAGER_CONFIG}"
+    chmod 0644 "${SAMBA_MANAGER_CONFIG}"
+    cat >> "${SAMBA_MANAGER_CONFIG}" <<EOF
+
+# S2S-SHARE: ${name}
+[${name}]
+   path = ${path}
+   valid users = @${group}
+   read only = no
+   force group = ${group}
+   create mask = 0660
+   force create mode = 0660
+   directory mask = 2770
+   force directory mode = 2770
+EOF
+    printf 'NAME=%q\nPATH_VALUE=%q\nGROUP_VALUE=%q\n' "${name}" "${path}" "${group}" > "${state}"
+    chmod 600 "${state}"
+}
+
+samba_write_imported_share() {
+    local name="$1" effective="$2" path="$3" group="$4" state="${SAMBA_SHARE_DIR}/${name}.share"
+    printf '\n# S2S-SHARE: %s\n%s\n' "${name}" "${effective}" >> "${SAMBA_MANAGER_CONFIG}"
+    printf 'NAME=%q\nPATH_VALUE=%q\nGROUP_VALUE=%q\n' "${name}" "${path}" "${group}" > "${state}"
+    chmod 600 "${state}"
+}
+
+samba_remove_share_block_from_file() {
+    local file="$1" wanted="$2" temp file_mode
+    temp="$(mktemp "${file}.s2s.XXXXXX")" || return 1
+    awk -v wanted="${wanted}" '
+        function header_name(line, name) { name=line; sub(/^[[:space:]]*\[/,"",name); sub(/\][[:space:]]*$/,"",name); return tolower(name) }
+        /^# S2S-SHARE: / { pending=$0; next }
+        /^\[[^]]+\][[:space:]]*$/ {
+            target=(header_name($0)==tolower(wanted))
+            if (!target && pending != "") print pending
+            pending=""; skip=target
+            if (!skip) print
+            next
+        }
+        {
+            if (pending != "") { print pending; pending="" }
+            if (!skip) print
+        }
+        END { if (pending != "") print pending }
+    ' "${file}" > "${temp}"
+    file_mode="$(stat -c '%a' "${file}" 2>/dev/null || stat -f '%Lp' "${file}" 2>/dev/null || echo 644)"
+    install -m "${file_mode}" "${temp}" "${file}"
+    rm -f -- "${temp}"
+}
+
+samba_install() {
+    banner; section "INSTALL SAMBA"
+    samba_installed && { info "Samba is already installed."; pause; return; }
+    echo "Installs the Debian samba package and enables/starts smbd."
+    echo "No share, user, directory or firewall rule is created by this step."
+    echo; warn "Package installation changes this Debian system."
+    confirm_yes_no "Install Samba now?" "N" || return
+    if apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y samba && systemctl enable --now smbd; then
+        ok "Samba installed and smbd enabled at boot."
+    else error "Samba installation or service activation failed."; fi
+    pause
+}
+
+samba_show_overview() {
+    banner; section "SAMBA STATUS AND SHARES"
+    samba_installed || { warn "Samba is not installed."; pause; return; }
+    printf '%-26s %s\n' "Samba version:" "$(smbd --version 2>/dev/null || echo unknown)"
+    printf '%-26s %s\n' "smbd service:" "$(samba_service_active && echo active || echo inactive)"
+    printf '%-26s %s\n' "Boot activation:" "$(systemctl is-enabled smbd 2>/dev/null || echo unknown)"
+    printf '%-26s %s\n' "Main configuration:" "${SAMBA_CONFIG}"
+    printf '%-26s %s\n' "Manager configuration:" "${SAMBA_MANAGER_CONFIG}"
+    echo; printf '%-4s %-12s %-24s %s\n' "#" "TYPE" "SHARE" "PATH / PURPOSE"
+    local name block path i=0 type purpose
+    while IFS= read -r name; do
+        [[ -n "${name}" ]] || continue; i=$((i + 1)); block="$(samba_effective_share_block "${name}")"
+        path="$(awk -F'= ' '$1 ~ /^[[:space:]]*path[[:space:]]*$/ {print $2; exit}' <<< "${block}")"
+        if samba_system_share "${name}"; then type="SYSTEM"; purpose="${path:-dynamic/system share}"
+        elif samba_share_is_managed "${name}"; then type="S2S"; purpose="${path:-unknown}"
+        else type="EXTERNAL"; purpose="${path:-configured externally}"; fi
+        printf '%-4s %-12s %-24s %s\n' "${i}" "${type}" "${name}" "${purpose}"
+    done < <(samba_effective_share_names)
+    (( i > 0 )) || info "No configured shares found."
+    echo; info "Dynamic user shares generated by [homes] are represented by the single SYSTEM entry 'homes'."
+    info "IPC$ is generated at runtime and is not an importable static share."
+    pause
+}
+
+samba_create_share() {
+    banner; section "CREATE MANAGED SAMBA SHARE"
+    samba_installed || { error "Samba is not installed."; pause; return; }
+    local name path group owner backup_main backup_manager path_existed=0 group_needs_create=0 old_uid="" old_gid="" old_mode=""
+    echo "Creates one shared read/write workspace for members of an existing Linux group."
+    echo "New paths must be below /srv. Files are private to owner/group (0660); directories use 2770."
+    echo "B = Back    E = Exit"; echo
+    read -r -p "Share name: " name
+    [[ "${name}" =~ ^[Bb]$ ]] && return; [[ "${name}" =~ ^[Ee]$ ]] && { clear_screen; exit 0; }
+    valid_samba_share_name "${name}" || { error "Use 1-64 letters, numbers, spaces, dot, underscore or hyphen; reserved names are rejected."; pause; return; }
+    samba_effective_share_names | grep -Fxiq "${name}" && { error "A share with this name already exists."; pause; return; }
+    read -r -p "Directory below /srv (example /srv/share): " path
+    valid_new_samba_path "${path}" || { error "Enter a safe absolute path below /srv."; pause; return; }
+    samba_path_resolves_safely "${path}" || { error "The path is not canonical or traverses a symbolic link; use a direct path below /srv."; pause; return; }
+    read -r -p "Existing Linux group [smbshare]: " group; group="${group:-smbshare}"
+    valid_samba_group_name "${group}" || { error "The Linux group name is invalid."; pause; return; }
+    if ! getent group "${group}" >/dev/null; then
+        info "Linux group '${group}' does not exist."
+        group_needs_create=1
+    fi
+    read -r -p "Existing Linux owner user: " owner
+    id "${owner}" >/dev/null 2>&1 || { error "The Linux user does not exist."; pause; return; }
+    banner; section "SAMBA SHARE PREVIEW"
+    printf '%-24s %s\n' "Share:" "${name}"; printf '%-24s %s\n' "Path:" "${path}"
+    printf '%-24s %s\n' "Allowed users:" "@${group}"; printf '%-24s %s\n' "Owner/group:" "${owner}:${group}"
+    (( group_needs_create == 1 )) && printf '%-24s %s\n' "Linux group:" "will be created"
+    printf '%-24s %s\n' "Files/directories:" "0660 / 2770"; printf '%-24s %s\n' "Guest access:" "disabled"
+    echo; warn "Members of ${group} can create, modify and delete shared content."
+    confirm_yes_no "Create this managed share?" "N" || return
+    if (( group_needs_create == 1 )); then groupadd "${group}" || { error "The Linux group could not be created."; pause; return; }; fi
+    if [[ -d "${path}" ]]; then path_existed=1; old_uid="$(stat -c '%u' "${path}")"; old_gid="$(stat -c '%g' "${path}")"; old_mode="$(stat -c '%a' "${path}")"; fi
+    touch "${SAMBA_MANAGER_CONFIG}"; chmod 0644 "${SAMBA_MANAGER_CONFIG}"
+    backup_main="$(samba_backup_file "${SAMBA_CONFIG}" smb.conf)"; backup_manager="$(samba_backup_file "${SAMBA_MANAGER_CONFIG}" manager-shares)"
+    if ! mkdir -p -- "${path}" || ! chown "${owner}:${group}" "${path}" || ! chmod 2770 "${path}"; then
+        (( path_existed == 1 )) && { chown "${old_uid}:${old_gid}" "${path}"; chmod "${old_mode}" "${path}"; }
+        (( group_needs_create == 1 )) && groupdel "${group}" 2>/dev/null || true
+        error "The share directory could not be prepared."; pause; return 1
+    fi
+    samba_ensure_manager_include && samba_write_managed_share "${name}" "${path}" "${group}" && testparm -s "${SAMBA_CONFIG}" >/dev/null 2>&1 || {
+        samba_restore_backup "${backup_main}" "${SAMBA_CONFIG}"; samba_restore_backup "${backup_manager}" "${SAMBA_MANAGER_CONFIG}"; rm -f -- "${SAMBA_SHARE_DIR}/${name}.share"
+        if (( path_existed == 1 )); then chown "${old_uid}:${old_gid}" "${path}"; chmod "${old_mode}" "${path}"; else rmdir -- "${path}" 2>/dev/null || true; fi
+        (( group_needs_create == 1 )) && groupdel "${group}" 2>/dev/null || true
+        error "Configuration validation failed. The Samba configuration was rolled back automatically."
+        printf '%-24s %s\n' "Main backup:" "${backup_main}"; printf '%-24s %s\n' "Manager backup:" "${backup_manager}"; pause; return 1; }
+    systemctl reload smbd && ok "Share created and Samba reloaded." || warn "Share saved, but smbd reload failed."
+    printf '%-24s %s\n' "Main backup:" "${backup_main}"; printf '%-24s %s\n' "Manager backup:" "${backup_manager}"; pause
+}
+
+samba_takeover_share() {
+    banner; section "TAKE OVER EXISTING SAMBA SHARE"
+    samba_installed || { error "Samba is not installed."; pause; return; }
+    local -a names=(); local name type i=0 choice source effective path group backup_source backup_main backup_manager before after
+    while IFS= read -r name; do
+        samba_system_share "${name}" && continue
+        samba_share_is_managed "${name}" && continue
+        names+=("${name}"); i=$((i + 1)); printf '  [%d] %s\n' "${i}" "${name}"
+    done < <(samba_effective_share_names)
+    (( ${#names[@]} > 0 )) || { info "No external static share is available for take-over."; pause; return; }
+    echo; echo "B = Back    E = Exit"; read -r -p "Share number: " choice
+    [[ "${choice}" =~ ^[Bb]$ ]] && return; [[ "${choice}" =~ ^[Ee]$ ]] && { clear_screen; exit 0; }
+    [[ "${choice}" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#names[@]} )) || { error "Invalid selection."; pause; return; }
+    name="${names[$((choice - 1))]}"; source="$(samba_find_raw_share_source "${name}" 2>/dev/null || true)"
+    [[ -n "${source}" ]] || { error "The source block is not unique and cannot be taken over safely."; info "The share remains EXTERNAL and unchanged."; pause; return; }
+    [[ "${source}" != "${SAMBA_MANAGER_CONFIG}" ]] || { error "The share is already in the manager file but has no valid state marker."; pause; return; }
+    effective="$(samba_effective_share_block "${name}")"
+    path="$(awk -F'= ' '$1 ~ /^[[:space:]]*path[[:space:]]*$/ {print $2; exit}' <<< "${effective}")"
+    group="$(awk -F'= ' '$1 ~ /^[[:space:]]*force group[[:space:]]*$/ {print $2; exit}' <<< "${effective}")"
+    if [[ -z "${group}" ]]; then group="$(awk -F'= ' '$1 ~ /^[[:space:]]*valid users[[:space:]]*$/ {for(i=2;i<=NF;i++) if($i ~ /^@/) {sub(/^@/,"",$i); print $i; exit}}' <<< "${effective}")"; fi
+    [[ -n "${path}" && -n "${group}" ]] || { error "Take-over requires an effective path and group-based access/force group."; info "This external share remains unchanged."; pause; return; }
+    getent group "${group}" >/dev/null || { error "The effective Linux group '${group}' does not exist."; pause; return; }
+    banner; section "SAMBA TAKE-OVER PREVIEW"
+    printf '%-24s %s\n' "Share:" "${name}"; printf '%-24s %s\n' "Source file:" "${source}"
+    printf '%-24s %s\n' "Path:" "${path}"; printf '%-24s %s\n' "Managed group:" "${group}"
+    echo; info "The complete effective share block shown by testparm will be preserved."
+    warn "Formatting and comments from the original source are not part of Samba's effective configuration."
+    confirm_yes_no "Take over this share?" "N" || return
+    touch "${SAMBA_MANAGER_CONFIG}"; chmod 0644 "${SAMBA_MANAGER_CONFIG}"
+    backup_source="$(samba_backup_file "${source}" takeover-source)"; backup_main="$(samba_backup_file "${SAMBA_CONFIG}" smb.conf)"; backup_manager="$(samba_backup_file "${SAMBA_MANAGER_CONFIG}" manager-shares)"
+    before="${effective}"
+    samba_remove_share_block_from_file "${source}" "${name}" && samba_ensure_manager_include && samba_write_imported_share "${name}" "${effective}" "${path}" "${group}" || {
+        samba_restore_backup "${backup_source}" "${source}"; samba_restore_backup "${backup_main}" "${SAMBA_CONFIG}"; samba_restore_backup "${backup_manager}" "${SAMBA_MANAGER_CONFIG}"; rm -f -- "${SAMBA_SHARE_DIR}/${name}.share"
+        error "Take-over write failed and was rolled back automatically."; printf '%-24s %s\n' "Source backup:" "${backup_source}"; printf '%-24s %s\n' "Manager backup:" "${backup_manager}"; pause; return 1; }
+    if ! testparm -s "${SAMBA_CONFIG}" >/dev/null 2>&1; then
+        samba_restore_backup "${backup_source}" "${source}"; samba_restore_backup "${backup_main}" "${SAMBA_CONFIG}"; samba_restore_backup "${backup_manager}" "${SAMBA_MANAGER_CONFIG}"; rm -f -- "${SAMBA_SHARE_DIR}/${name}.share"
+        error "Samba rejected the converted configuration; take-over was rolled back automatically."
+        printf '%-24s %s\n' "Source backup:" "${backup_source}"; printf '%-24s %s\n' "Manager backup:" "${backup_manager}"; pause; return 1
+    fi
+    after="$(samba_effective_share_block "${name}")"
+    systemctl reload smbd && ok "Share taken over and Samba reloaded." || warn "Configuration is valid, but smbd reload failed."
+    printf '%-24s %s\n' "Source backup:" "${backup_source}"; printf '%-24s %s\n' "Manager backup:" "${backup_manager}"
+    if [[ "${before}" != "${after}" ]]; then warn "The effective block differs after reload; compare it with the retained backups."; else ok "Effective share settings were preserved."; fi
+    pause
+}
+
+samba_show_users() {
+    banner; section "SAMBA USERS"
+    samba_installed || { error "Samba is not installed."; pause; return; }
+    printf '%-22s %-12s %-14s %-20s %s\n' "USER" "SAMBA" "LINUX TYPE" "HOME" "GROUPS"
+    local user entry shell home type groups flags samba_status
+    while IFS=: read -r user _; do
+        entry="$(getent passwd "${user}" || true)"; shell="$(cut -d: -f7 <<< "${entry}")"; home="$(cut -d: -f6 <<< "${entry}")"
+        flags="$(pdbedit -Lv -u "${user}" 2>/dev/null | awk -F: '/Account Flags/ {gsub(/[[:space:]]/,"",$2); print $2; exit}')"
+        [[ "${flags}" == *D* ]] && samba_status="DISABLED" || samba_status="ENABLED"
+        if [[ -z "${entry}" ]]; then type="MISSING"; groups="-"; home="-"
+        elif [[ "${shell}" == */nologin || "${shell}" == */false ]]; then type="SAMBA ONLY"; groups="$(id -nG "${user}" 2>/dev/null || echo '-')"
+        else type="NORMAL"; groups="$(id -nG "${user}" 2>/dev/null || echo '-')"; fi
+        printf '%-22s %-12s %-14s %-20s %s\n' "${user}" "${samba_status}" "${type}" "${home}" "${groups}"
+    done < <(pdbedit -L 2>/dev/null)
+    echo; info "NORMAL users may also log in to Linux; SAMBA ONLY users use a nologin shell."
+    pause
+}
+
+samba_add_user() {
+    banner; section "ADD SAMBA USER"
+    samba_installed || { error "Samba is not installed."; pause; return; }
+    local mode user group choice
+    echo "  [1] Add Samba access to an existing Linux user"
+    echo "  [2] Create a normal Linux user and add Samba access"
+    echo "  [3] Create a Samba-only Linux account (no shell login)"
+    echo "  [B] Back    [E] Exit"; echo; read -r -p "Account type: " mode
+    [[ "${mode}" =~ ^[Bb]$ ]] && return; [[ "${mode}" =~ ^[Ee]$ ]] && { clear_screen; exit 0; }
+    [[ "${mode}" =~ ^[123]$ ]] || { error "Invalid selection."; pause; return; }
+    read -r -p "User name: " user
+    [[ "${user}" =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || { error "The user name contains unsupported characters."; pause; return; }
+    pdbedit -L 2>/dev/null | cut -d: -f1 | grep -Fxq "${user}" && { error "This Samba user already exists."; pause; return; }
+    if [[ "${mode}" == "1" ]]; then id "${user}" >/dev/null 2>&1 || { error "The Linux user does not exist."; pause; return; }
+    elif ! [[ "${user}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then error "New Debian users require a lower-case standard user name."; pause; return
+    elif id "${user}" >/dev/null 2>&1; then error "The Linux user already exists; choose option 1."; pause; return
+    fi
+    read -r -p "Share group to join [smbshare]: " group; group="${group:-smbshare}"
+    getent group "${group}" >/dev/null || { error "The Linux group does not exist."; pause; return; }
+    banner; section "SAMBA USER PREVIEW"
+    printf '%-24s %s\n' "User:" "${user}"; printf '%-24s %s\n' "Account type:" "$([[ "${mode}" == 1 ]] && echo existing || { [[ "${mode}" == 2 ]] && echo normal || echo 'Samba only'; })"
+    printf '%-24s %s\n' "Share group:" "${group}"; echo
+    warn "The Samba password is entered interactively and is not printed by the manager."
+    confirm_yes_no "Create/enable this Samba account?" "N" || return
+    case "${mode}" in 2) adduser "${user}" || { error "Linux user creation failed."; pause; return; } ;; 3) useradd -M -s /usr/sbin/nologin "${user}" || { error "Linux account creation failed."; pause; return; } ;; esac
+    usermod -aG "${group}" "${user}" || { error "Could not add the user to ${group}."; pause; return; }
+    if smbpasswd -a "${user}"; then ok "Samba user enabled."; else error "Samba password setup failed."; fi
+    pause
+}
+
+samba_user_actions() {
+    banner; section "SAMBA USER ACTIONS"
+    samba_installed || { error "Samba is not installed."; pause; return; }
+    local user choice group
+    read -r -p "Existing Samba user: " user
+    pdbedit -L 2>/dev/null | cut -d: -f1 | grep -Fxq "${user}" || { error "Samba user not found."; pause; return; }
+    echo; echo "  [1] Change Samba password"; echo "  [2] Enable Samba account"; echo "  [3] Disable Samba account"
+    echo "  [4] Add user to an existing share group"; echo "  [5] Remove user from an existing share group"
+    echo "  [6] Delete Samba account only (keep Linux user and files)"; echo "  [B] Back"; read -r -p "Action: " choice
+    case "${choice}" in
+        1) smbpasswd "${user}" && ok "Password changed." || error "Password change failed." ;;
+        2) smbpasswd -e "${user}" && ok "Samba account enabled." || error "Enable failed." ;;
+        3) smbpasswd -d "${user}" && ok "Samba account disabled." || error "Disable failed." ;;
+        4) read -r -p "Existing group: " group; getent group "${group}" >/dev/null && usermod -aG "${group}" "${user}" && ok "Group membership added." || error "Group operation failed." ;;
+        5) read -r -p "Existing group: " group; getent group "${group}" >/dev/null || { error "Group not found."; pause; return; }; warn "Removing membership may immediately remove access to associated shares."; confirm_yes_no "Remove ${user} from ${group}?" "N" && { gpasswd -d "${user}" "${group}" && ok "Group membership removed." || error "Group operation failed."; } ;;
+        6) warn "The Linux account, home directory and files will be kept."; confirm_yes_no "Delete only the Samba account for ${user}?" "N" && { smbpasswd -x "${user}" && ok "Samba account deleted." || error "Deletion failed."; } ;;
+        b|B|0|"") return ;; *) error "Invalid selection." ;;
+    esac
+    pause
+}
+
+samba_delete_managed_share() {
+    banner; section "REMOVE MANAGED SAMBA SHARE"
+    local -a names=(); local file name choice backup
+    for file in "${SAMBA_SHARE_DIR}"/*.share; do [[ -f "${file}" ]] && names+=("$(basename "${file}" .share)"); done
+    (( ${#names[@]} > 0 )) || { info "No managed Samba share exists."; pause; return; }
+    local i; for i in "${!names[@]}"; do printf '  [%d] %s\n' "$((i + 1))" "${names[$i]}"; done
+    echo; read -r -p "Share number (B = Back): " choice
+    [[ "${choice}" =~ ^[Bb]$ ]] && return
+    [[ "${choice}" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#names[@]} )) || { error "Invalid selection."; pause; return; }
+    name="${names[$((choice - 1))]}"; warn "The share definition is removed, but its directory and files are kept."
+    confirm_yes_no "Remove managed share '${name}'?" "N" || return
+    backup="$(samba_backup_file "${SAMBA_MANAGER_CONFIG}" manager-shares)"
+    samba_remove_share_block_from_file "${SAMBA_MANAGER_CONFIG}" "${name}"
+    if testparm -s "${SAMBA_CONFIG}" >/dev/null 2>&1; then
+        rm -f -- "${SAMBA_SHARE_DIR}/${name}.share"; systemctl reload smbd || true; ok "Share removed; data directory retained."
+    else
+        samba_restore_backup "${backup}" "${SAMBA_MANAGER_CONFIG}"; error "Validation failed; configuration was rolled back."
+    fi
+    printf '%-24s %s\n' "Configuration backup:" "${backup}"; pause
+}
+
+samba_edit_managed_share() {
+    banner; section "EDIT MANAGED SAMBA SHARE"
+    local -a names=(); local file name choice current path group backup state_backup
+    for file in "${SAMBA_SHARE_DIR}"/*.share; do [[ -f "${file}" ]] && names+=("$(basename "${file}" .share)"); done
+    (( ${#names[@]} > 0 )) || { info "No managed Samba share exists."; pause; return; }
+    local i; for i in "${!names[@]}"; do printf '  [%d] %s\n' "$((i + 1))" "${names[$i]}"; done
+    echo; read -r -p "Share number (B = Back): " choice; [[ "${choice}" =~ ^[Bb]$ ]] && return
+    [[ "${choice}" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#names[@]} )) || { error "Invalid selection."; pause; return; }
+    name="${names[$((choice - 1))]}"; current="$(samba_effective_share_block "${name}")"
+    path="$(awk -F'= ' '$1 ~ /^[[:space:]]*path[[:space:]]*$/ {print $2; exit}' <<< "${current}")"
+    group="$(awk -F'= ' '$1 ~ /^[[:space:]]*force group[[:space:]]*$/ {print $2; exit}' <<< "${current}")"
+    if [[ -z "${group}" ]]; then group="$(awk -F'= ' '$1 ~ /^[[:space:]]*valid users[[:space:]]*$/ {for(i=2;i<=NF;i++) if($i ~ /^@/) {sub(/^@/,"",$i); print $i; exit}}' <<< "${current}")"; fi
+    echo "Editing converts this managed share to the standard shared-workspace profile."
+    read -r -p "Directory [${path}]: " choice; path="${choice:-${path}}"
+    [[ -d "${path}" ]] || { error "The directory must already exist when editing a share."; pause; return; }
+    samba_path_resolves_safely "${path}" || { error "The path is not a direct canonical directory below /srv."; pause; return; }
+    read -r -p "Existing Linux group [${group}]: " choice; group="${choice:-${group}}"
+    valid_samba_group_name "${group}" && getent group "${group}" >/dev/null || { error "The existing Linux group is invalid."; pause; return; }
+    banner; section "SAMBA SHARE EDIT PREVIEW"
+    printf '%-24s %s\n' "Share:" "${name}"; printf '%-24s %s\n' "Path:" "${path}"; printf '%-24s %s\n' "Allowed/forced group:" "${group}"
+    printf '%-24s %s\n' "Files/directories:" "0660 / 2770"; echo
+    warn "The share directory contents and ownership are not changed by this edit."
+    confirm_yes_no "Apply this managed share configuration?" "N" || return
+    backup="$(samba_backup_file "${SAMBA_MANAGER_CONFIG}" manager-shares)"; state_backup="$(samba_backup_file "${SAMBA_SHARE_DIR}/${name}.share" share-state)"
+    samba_remove_share_block_from_file "${SAMBA_MANAGER_CONFIG}" "${name}" && samba_write_managed_share "${name}" "${path}" "${group}"
+    if testparm -s "${SAMBA_CONFIG}" >/dev/null 2>&1; then systemctl reload smbd || true; ok "Managed share updated."
+    else samba_restore_backup "${backup}" "${SAMBA_MANAGER_CONFIG}"; samba_restore_backup "${state_backup}" "${SAMBA_SHARE_DIR}/${name}.share"; error "Validation failed; configuration was rolled back."; fi
+    printf '%-24s %s\n' "Configuration backup:" "${backup}"; pause
+}
+
+samba_permissions_check() {
+    banner; section "SAMBA PATH AND PERMISSION CHECK"
+    samba_installed || { error "Samba is not installed."; pause; return; }
+    local name block path valid force_group
+    read -r -p "Configured share name: " name
+    block="$(samba_effective_share_block "${name}")"; [[ -n "${block}" ]] || { error "Share not found."; pause; return; }
+    path="$(awk -F'= ' '$1 ~ /^[[:space:]]*path[[:space:]]*$/ {print $2; exit}' <<< "${block}")"
+    valid="$(awk -F'= ' '$1 ~ /^[[:space:]]*valid users[[:space:]]*$/ {$1=""; sub(/^= /,""); print; exit}' <<< "${block}")"
+    force_group="$(awk -F'= ' '$1 ~ /^[[:space:]]*force group[[:space:]]*$/ {print $2; exit}' <<< "${block}")"
+    printf '%-24s %s\n' "Share:" "${name}"; printf '%-24s %s\n' "Path:" "${path:-dynamic/not explicit}"
+    printf '%-24s %s\n' "Valid users:" "${valid:-not restricted here}"; printf '%-24s %s\n' "Force group:" "${force_group:-not configured}"
+    if [[ -n "${path}" && -d "${path}" ]]; then ok "Share directory exists."; stat -c 'Owner/group:             %U:%G%nMode:                    %a (%A)' "${path}"
+    elif [[ -n "${path}" ]]; then error "Share directory does not exist."; else info "Dynamic/system share has no fixed path in this block."; fi
+    echo; info "This check does not recursively inspect or modify file ownership."
+    if samba_share_is_managed "${name}" && [[ -n "${path}" && -d "${path}" && -n "${force_group}" ]]; then
+        echo; if confirm_yes_no "Repair only the share root directory group and mode to ${force_group}:2770?" "N"; then
+            chgrp "${force_group}" "${path}" && chmod 2770 "${path}" && ok "Share root permissions repaired; contents were not changed." || error "Permission repair failed."
+        fi
+    fi
+    pause
+}
+
+samba_diagnostics() {
+    banner; section "SAMBA SERVICE AND CONFIGURATION DIAGNOSTICS"
+    samba_installed || { error "Samba is not installed."; pause; return; }
+    samba_service_active && ok "smbd.service is active." || error "smbd.service is not active."
+    systemctl is-enabled --quiet smbd 2>/dev/null && ok "smbd.service is enabled at boot." || warn "smbd.service is not enabled at boot."
+    if testparm -s "${SAMBA_CONFIG}" >/dev/null 2>&1; then ok "testparm accepts the effective configuration."; else error "testparm reports an invalid configuration."; testparm -s "${SAMBA_CONFIG}" 2>&1 || true; fi
+    if ss -lnt 2>/dev/null | awk '$4 ~ /:445$/ {found=1} END{exit !found}'; then ok "TCP port 445 is listening."; else warn "No TCP listener was found on port 445."; fi
+    command_available pdbedit && ok "Samba user database is readable ($(pdbedit -L 2>/dev/null | wc -l) accounts)." || error "pdbedit is unavailable."
+    [[ -f "${SAMBA_MANAGER_CONFIG}" ]] && info "Manager include: ${SAMBA_MANAGER_CONFIG}" || info "No manager share include has been created yet."
+    echo; info "Recent smbd journal:"; journalctl -u smbd -n 20 --no-pager 2>/dev/null || true
+    echo; info "Diagnostics did not change Samba, users, files or firewall rules."; pause
+}
+
+samba_reload() {
+    banner; section "VALIDATE AND RELOAD SAMBA"
+    samba_installed || { error "Samba is not installed."; pause; return; }
+    if ! testparm -s "${SAMBA_CONFIG}" >/dev/null 2>&1; then error "Configuration is invalid; smbd will not be reloaded."; testparm -s "${SAMBA_CONFIG}" 2>&1 || true; pause; return; fi
+    ok "Configuration validation passed."; confirm_yes_no "Reload smbd now?" "N" || return
+    systemctl reload smbd && ok "Samba reloaded without interrupting the service." || error "smbd reload failed."
+    pause
+}
+
+samba_ufw_guidance() {
+    banner; section "SAMBA FIREWALL GUIDANCE"
+    echo "SMB file sharing normally uses TCP destination port 445."
+    echo "Allow only trusted LAN, WireGuard or S2S source networks; do not expose SMB to the public Internet."
+    echo "A provider firewall is separate from local UFW."
+    echo
+    if ufw_installed; then
+        ufw_active && printf '%-24s %s\n' "UFW status:" "active" || printf '%-24s %s\n' "UFW status:" "inactive"
+        echo; echo "Create a permanent TCP rule for port 445 with a trusted IPv4/CIDR source."
+        echo; if confirm_yes_no "Open the guided permanent UFW rule wizard now?" "N"; then add_ufw_rule permanent; return; fi
+    else info "UFW is not installed. It can be installed separately from [22] UFW."; fi
+    echo; warn "Never choose source 'any' for SMB on an Internet-reachable server."; pause
+}
+
+samba_management_menu() {
+    while :; do
+        banner; section "SAMBA / FILE SHARES"
+        if samba_installed; then
+            printf '%-24s %s\n' "Installation:" "present"; printf '%-24s %s\n' "smbd service:" "$(samba_service_active && echo active || echo inactive)"
+        else warn "Samba is not installed. Viewing this menu does not install anything."; fi
+        cat <<'EOF'
+
+  [1] Show Samba status and all shares
+  [2] Install Samba
+  [3] Create shared group workspace
+  [4] Take over existing external share
+  [5] Edit managed shared workspace
+  [6] Remove managed share (keep directory and files)
+  [7] Show Samba users
+  [8] Add Samba user
+  [9] Password / enable / disable / group / delete user
+  [10] Check / repair share root permissions
+  [11] Samba service and configuration diagnostics
+  [12] Validate and reload Samba
+  [13] SMB / UFW guidance
+  [B] Back to main menu
+  [E] Exit
+EOF
+        echo; local choice; read -r -p "Selection: " choice
+        case "${choice}" in
+            1) samba_show_overview ;; 2) samba_install ;; 3) samba_create_share ;; 4) samba_takeover_share ;;
+            5) samba_edit_managed_share ;; 6) samba_delete_managed_share ;; 7) samba_show_users ;; 8) samba_add_user ;;
+            9) samba_user_actions ;; 10) samba_permissions_check ;; 11) samba_diagnostics ;; 12) samba_reload ;; 13) samba_ufw_guidance ;;
+            b|B|0|"") return ;; e|E) clear_screen; echo "Bye."; exit 0 ;; *) error "Invalid selection."; sleep 1 ;;
+        esac
+    done
+}
+
+# End Samba / file-share management
+
 main_menu() {
     while :; do
         banner
@@ -12729,6 +13276,7 @@ main_menu() {
             "  [23] Access Check (read-only)"
             "  [24] IPTABLES / Packet Filter (read-only)"
             "  [25] Cron / Scheduled Tasks"
+            "  [26] Samba / File Shares"
         )
 
         render_menu_pair \
@@ -12741,7 +13289,7 @@ main_menu() {
 
         render_menu_pair \
             "EXPORT / TRANSFER" "${C_GREEN}" menu_export \
-            "SYSTEM / VPN / UFW / IPTABLES / CRON" "${C_CYAN}" menu_system
+            "SYSTEM / VPN / FIREWALL / CRON / SAMBA" "${C_CYAN}" menu_system
 
         echo
         echo "  [E] Exit"
@@ -12776,6 +13324,7 @@ main_menu() {
             23) access_check_menu ;;
             24) iptables_management_menu ;;
             25) cron_management_menu ;;
+            26) samba_management_menu ;;
             [eE]|0) clear_screen; echo "Bye."; exit 0 ;;
             *) error "Invalid selection."; sleep 1 ;;
         esac
