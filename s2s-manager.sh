@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 2.2.5
+# Version 2.2.6
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="2.2.5"
+VERSION="2.2.6"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -13058,11 +13058,30 @@ samba_takeover_share() {
     pause
 }
 
+samba_user_home_display() {
+    local home="$1" type="$2"
+    if [[ "${type}" == "MISSING" ]]; then
+        printf '%s' "-"
+    elif [[ -n "${home}" && -d "${home}" ]]; then
+        printf '%s' "${home}"
+    elif [[ "${type}" == "SAMBA ONLY" ]]; then
+        printf '%s' "not created"
+    elif [[ -n "${home}" ]]; then
+        printf '%s' "${home} [missing]"
+    else
+        printf '%s' "-"
+    fi
+}
+
 samba_show_users() {
     banner; section "SAMBA USERS"
     samba_installed || { error "Samba is not installed."; pause; return; }
-    printf '%-22s %-12s %-14s %-20s %s\n' "USER" "SAMBA" "LINUX TYPE" "HOME" "GROUPS"
-    local user entry shell home type groups flags samba_status
+    local user_width=22 status_width=12 type_width=14 home_width=28 gap="  "
+    print_table_cell "USER" "${user_width}"; printf '%s' "${gap}"
+    print_table_cell "SAMBA" "${status_width}"; printf '%s' "${gap}"
+    print_table_cell "LINUX TYPE" "${type_width}"; printf '%s' "${gap}"
+    print_table_cell "HOME" "${home_width}"; printf '%s%s\n' "${gap}" "LINUX GROUPS"
+    local user entry shell home home_display type groups flags samba_status
     while IFS=: read -r user _; do
         entry="$(getent passwd "${user}" || true)"; shell="$(cut -d: -f7 <<< "${entry}")"; home="$(cut -d: -f6 <<< "${entry}")"
         flags="$(pdbedit -Lv -u "${user}" 2>/dev/null | awk -F: '/Account Flags/ {gsub(/[[:space:]]/,"",$2); print $2; exit}')"
@@ -13070,9 +13089,28 @@ samba_show_users() {
         if [[ -z "${entry}" ]]; then type="MISSING"; groups="-"; home="-"
         elif [[ "${shell}" == */nologin || "${shell}" == */false ]]; then type="SAMBA ONLY"; groups="$(id -nG "${user}" 2>/dev/null || echo '-')"
         else type="NORMAL"; groups="$(id -nG "${user}" 2>/dev/null || echo '-')"; fi
-        printf '%-22s %-12s %-14s %-20s %s\n' "${user}" "${samba_status}" "${type}" "${home}" "${groups}"
-    done < <(pdbedit -L 2>/dev/null)
-    echo; info "NORMAL users may also log in to Linux; SAMBA ONLY users use a nologin shell."
+        home_display="$(samba_user_home_display "${home}" "${type}")"
+
+        print_table_cell "${user}" "${user_width}"; printf '%s' "${gap}"
+        if [[ "${samba_status}" == "ENABLED" ]]; then
+            print_table_cell "${samba_status}" "${status_width}" "${C_GREEN}${C_BOLD}" "${C_RESET}"
+        else
+            print_table_cell "${samba_status}" "${status_width}" "${C_RED}${C_BOLD}" "${C_RESET}"
+        fi
+        printf '%s' "${gap}"
+        case "${type}" in
+            NORMAL) print_table_cell "${type}" "${type_width}" "${C_CYAN}${C_BOLD}" "${C_RESET}" ;;
+            "SAMBA ONLY") print_table_cell "${type}" "${type_width}" "${C_YELLOW}${C_BOLD}" "${C_RESET}" ;;
+            *) print_table_cell "${type}" "${type_width}" "${C_RED}${C_BOLD}" "${C_RESET}" ;;
+        esac
+        printf '%s' "${gap}"
+        print_table_cell "${home_display}" "${home_width}"
+        printf '%s%s\n' "${gap}" "${groups}"
+    done < <(pdbedit -L 2>/dev/null | sort -f)
+    echo
+    info "NORMAL users may also log in to Linux; SAMBA ONLY users use a nologin shell."
+    info "'not created' means the account has a configured home path but no directory was created."
+    info "A group matching the user name is normally its primary Linux group; smbshare grants access to the shared workspace."
     pause
 }
 
