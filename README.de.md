@@ -89,6 +89,7 @@ Ich habe das Projekt iterativ zusammen mit OpenAIs ChatGPT und Codex entworfen u
 - Eindeutig gefundene externe Shares mit ihren wirksamen `testparm`-Werten übernehmen
 - Gemeinsame Gruppenbereiche in `/etc/samba/s2s-manager-shares.conf`
 - Normale Linux-/Samba-Benutzer und Samba-only-Konten mit `nologin`
+- Geführte SMB-Firewallregel mit vorbelegtem TCP-Port 445 und auswählbaren S2S-/WireGuard-Quellnetzen; öffentlicher Zugriff über `any` wird nicht angeboten
 - Backups unter `/root/s2s-manager/samba/backups/`, Prüfung vor Reload und automatischer Rollback
 
 ## Sicherheitsmodell

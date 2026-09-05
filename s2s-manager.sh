@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 2.2.1
+# Version 2.2.2
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="2.2.1"
+VERSION="2.2.2"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -3417,6 +3417,55 @@ add_ufw_rule() {
     else
         ok "Permanent UFW rule created."
     fi
+    pause
+}
+
+add_predefined_permanent_ufw_rule() {
+    local protocol="$1" port="$2" source="$3" description="$4"
+    local comment choice output
+
+    ufw_installed || { error "UFW is not installed."; pause; return 1; }
+    PROMPT_UFW_PROTOCOL="${protocol}"
+    PROMPT_UFW_PORT="${port}"
+    PROMPT_UFW_SOURCE="${source}"
+    PROMPT_UFW_DESCRIPTION="${description}"
+    comment="S2S Manager PERM ${PROMPT_UFW_DESCRIPTION}"
+
+    banner
+    section "FIREWALL RULE PREVIEW"
+    printf '%-24s %s\n' "Action:" "ALLOW IN"
+    printf '%-24s %s\n' "Protocol:" "${PROMPT_UFW_PROTOCOL^^}"
+    printf '%-24s %s\n' "Destination port:" "${PROMPT_UFW_PORT} (SMB file sharing)"
+    printf '%-24s %s\n' "Allowed source:" "${PROMPT_UFW_SOURCE}"
+    printf '%-24s %s\n' "Description:" "${PROMPT_UFW_DESCRIPTION}"
+    printf '%-24s %s\n' "Lifetime:" "PERMANENT"
+    echo
+    info "This changes only the local UFW configuration; it does not modify Samba, VPNs or routing."
+    if ufw_active; then
+        info "UFW is active, so the rule becomes effective immediately."
+    else
+        info "UFW is inactive. The rule is stored now and becomes effective if UFW is enabled later."
+    fi
+    warn "Only devices whose source address is inside ${PROMPT_UFW_SOURCE} will be allowed by this rule."
+    echo
+    read -r -p "Create this Samba firewall rule? [y/N]: " choice
+    [[ "${choice,,}" == "y" ]] || { info "No rule was created."; pause; return 0; }
+
+    if ufw_allow_rule_spec_exists "${PROMPT_UFW_PORT}" "${PROMPT_UFW_PROTOCOL}" "${PROMPT_UFW_SOURCE}"; then
+        error "An equivalent ALLOW rule already exists for this source."
+        pause
+        return 1
+    fi
+
+    build_ufw_rule_args "${PROMPT_UFW_PORT}" "${PROMPT_UFW_PROTOCOL}" "${PROMPT_UFW_SOURCE}"
+    if ! output="$(ufw "${UFW_RULE_ARGS[@]}" comment "${comment}" 2>&1)"; then
+        error "UFW could not create the rule."
+        [[ -n "${output}" ]] && printf '%s\n' "${output}"
+        pause
+        return 1
+    fi
+    [[ -n "${output}" ]] && printf '%s\n' "${output}"
+    ok "Permanent Samba UFW rule created for ${PROMPT_UFW_SOURCE}."
     pause
 }
 
@@ -13174,18 +13223,114 @@ samba_reload() {
     pause
 }
 
+samba_firewall_add_candidate() {
+    local source="$1" label="$2" existing
+    [[ -n "${source}" ]] && valid_cidr "${source}" || return 0
+    source="$(cidr_normalized "${source}")"
+    [[ "${source}" != "0.0.0.0/0" ]] || return 0
+    for existing in "${SAMBA_FIREWALL_SOURCES[@]:-}"; do
+        [[ "${existing}" == "${source}" ]] && return 0
+    done
+    SAMBA_FIREWALL_SOURCES+=("${source}")
+    SAMBA_FIREWALL_LABELS+=("${label}")
+}
+
+samba_collect_firewall_candidates() {
+    local tunnel_id route label
+    SAMBA_FIREWALL_SOURCES=()
+    SAMBA_FIREWALL_LABELS=()
+
+    while read -r tunnel_id; do
+        [[ -n "${tunnel_id}" ]] || continue
+        load_tunnel "${tunnel_id}" || continue
+        label="${DISPLAY_NAME:-${NAME:-${tunnel_id}}}"
+        while read -r route; do
+            [[ -n "${route}" ]] || continue
+            samba_firewall_add_candidate "${route}" "S2S remote network via ${label}"
+        done < <(read_routes "${tunnel_id}")
+    done < <(list_tunnel_names)
+
+    if wireguard_server_known && load_wireguard_server && [[ -n "${WG_NETWORK:-}" ]]; then
+        samba_firewall_add_candidate "${WG_NETWORK}" "WireGuard VPN network (${WG_INTERFACE:-wg0})"
+    fi
+}
+
 samba_ufw_guidance() {
-    banner; section "SAMBA FIREWALL GUIDANCE"
-    echo "SMB file sharing normally uses TCP destination port 445."
-    echo "Allow only trusted LAN, WireGuard or S2S source networks; do not expose SMB to the public Internet."
-    echo "A provider firewall is separate from local UFW."
+    local choice source normalized i status
+    banner; section "SAMBA / UFW ACCESS"
+    cat <<'EOF'
+SMB file sharing uses TCP destination port 445. This guided action creates one
+permanent local UFW ALLOW IN rule. Protocol, port and description are filled in
+automatically; you only choose the trusted source network that may use Samba.
+
+Configured S2S remote networks and the managed WireGuard VPN network are shown
+when available. Tunnel transfer networks, Docker networks and the public
+Internet are not offered. A provider/cloud firewall remains separate from UFW.
+EOF
     echo
-    if ufw_installed; then
-        ufw_active && printf '%-24s %s\n' "UFW status:" "active" || printf '%-24s %s\n' "UFW status:" "inactive"
-        echo; echo "Create a permanent TCP rule for port 445 with a trusted IPv4/CIDR source."
-        echo; if confirm_yes_no "Open the guided permanent UFW rule wizard now?" "N"; then add_ufw_rule permanent; return; fi
-    else info "UFW is not installed. It can be installed separately from [22] UFW."; fi
-    echo; warn "Never choose source 'any' for SMB on an Internet-reachable server."; pause
+    if ! ufw_installed; then
+        info "UFW is not installed. It can be installed separately from [22] UFW."
+        pause
+        return
+    fi
+    ufw_active && printf '%-24s %s\n' "UFW status:" "active" || printf '%-24s %s\n' "UFW status:" "inactive"
+
+    samba_collect_firewall_candidates
+    echo
+    section "TRUSTED SOURCE NETWORK"
+    if (( ${#SAMBA_FIREWALL_SOURCES[@]} > 0 )); then
+        for i in "${!SAMBA_FIREWALL_SOURCES[@]}"; do
+            if ufw_allow_rule_spec_exists 445 tcp "${SAMBA_FIREWALL_SOURCES[$i]}"; then
+                status="already allowed"
+            else
+                status="not yet allowed"
+            fi
+            printf '  [%d] %-20s %s [%s]\n' "$((i + 1))" "${SAMBA_FIREWALL_SOURCES[$i]}" "${SAMBA_FIREWALL_LABELS[$i]}" "${status}"
+        done
+    else
+        info "No configured S2S remote or WireGuard network was found."
+    fi
+    printf '  [C] Enter another trusted IPv4 address or CIDR network\n'
+    printf '  [B] Back\n'
+    printf '  [E] Exit\n'
+    echo
+    read -r -p "Allowed Samba source: " choice
+    case "${choice}" in
+        b|B|0|"") return ;;
+        e|E) clear_screen; echo "Bye."; exit 0 ;;
+        c|C)
+            while :; do
+                echo
+                echo "Enter one trusted source such as 192.168.178.0/23 or 10.20.30.5."
+                echo "Do not enter 'any', a URL, hostname, interface name, protocol or port."
+                echo "B = Back    E = Exit"
+                read -r -p "Trusted IPv4/CIDR: " source
+                case "${source}" in
+                    b|B|"") return ;;
+                    e|E) clear_screen; echo "Bye."; exit 0 ;;
+                esac
+                if valid_ipv4 "${source}"; then break; fi
+                if valid_cidr "${source}"; then
+                    normalized="$(cidr_normalized "${source}")"
+                    [[ "${normalized}" != "0.0.0.0/0" ]] || { error "Source 'any' / 0.0.0.0/0 is not permitted for Samba."; continue; }
+                    [[ "${source}" == "${normalized}" ]] || info "Network normalized to ${normalized}."
+                    source="${normalized}"
+                    break
+                fi
+                error "Enter one valid IPv4 address or IPv4 CIDR network."
+            done
+            ;;
+        *)
+            if ! [[ "${choice}" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#SAMBA_FIREWALL_SOURCES[@]} )); then
+                error "Invalid selection."
+                pause
+                return
+            fi
+            source="${SAMBA_FIREWALL_SOURCES[$((choice - 1))]}"
+            ;;
+    esac
+
+    add_predefined_permanent_ufw_rule tcp 445 "${source}" "Samba file sharing"
 }
 
 samba_management_menu() {
@@ -13208,7 +13353,7 @@ samba_management_menu() {
   [10] Check / repair share root permissions
   [11] Samba service and configuration diagnostics
   [12] Validate and reload Samba
-  [13] SMB / UFW guidance
+  [13] Allow trusted network through UFW for SMB
   [B] Back to main menu
   [E] Exit
 EOF

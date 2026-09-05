@@ -115,6 +115,7 @@ I have designed and developed the project iteratively in collaboration with Open
 - Controlled take-over of a uniquely located external share while preserving effective `testparm` settings
 - Manager-owned group workspaces in `/etc/samba/s2s-manager-shares.conf`
 - Normal Linux/Samba users and Samba-only accounts with a `nologin` shell
+- Guided SMB firewall rule with TCP 445 pre-filled and selectable S2S/WireGuard source networks; public `any` access is not offered
 - Backups under `/root/s2s-manager/samba/backups/`, validation before reload and automatic rollback
 
 ## Safety model
