@@ -114,8 +114,12 @@ I have designed and developed the project iteratively in collaboration with Open
 - Treat `[homes]`, `[printers]`, `[print$]` and runtime `IPC$` as system features
 - Controlled take-over of a uniquely located external share while preserving effective `testparm` settings
 - Manager-owned group workspaces in `/etc/samba/s2s-manager-shares.conf`
-- Normal Linux/Samba users and Samba-only accounts with a `nologin` shell
-- Guided SMB firewall rule with TCP 445 pre-filled and selectable S2S/WireGuard source networks; public `any` access is not offered
+- Exact current/new configuration preview before a managed share is converted to the standard workspace profile
+- Guided selection of groups referenced by shares, including member counts
+- Normal Linux/Samba users and Samba-only accounts with a `nologin` shell; safe mixed-case account names are supported
+- User inventory distinguishes real, missing and intentionally uncreated home directories
+- Read-only live sessions/open files through `smbstatus` and a share/group/account access matrix
+- Guided SMB firewall rule with TCP 445 pre-filled and selectable remote S2S networks, individual Debian S2S peers and WireGuard sources; public `any` access is not offered
 - Backups under `/root/s2s-manager/samba/backups/`, validation before reload and automatic rollback
 
 ## Safety model
@@ -243,8 +247,9 @@ Managed blocks store adjacent `S2S-JOB`, `S2S-ENABLED` and `S2S-READABLE` commen
 
 1. Select **[26] Samba / File Shares** and inspect all effective shares.
 2. Keep `[homes]`, printer shares and `IPC$` system-owned; take over an ordinary external share only when its source is unique.
-3. Create or edit a shared group workspace and assign Linux/Samba users to its group.
-4. Check permissions and diagnostics; allow TCP 445 only from trusted LAN/VPN sources.
+3. Create or edit a shared group workspace, review its exact current/new configuration and assign Linux/Samba users through the guided group selection.
+4. Use the access matrix and `smbstatus` views to inspect effective membership and live clients.
+5. Check permissions and diagnostics; allow TCP 445 only from trusted LAN/VPN/S2S sources.
 
 Manager shares live in `/etc/samba/s2s-manager-shares.conf`. Removing one keeps its directory and files. Per-user home-share policies, printers, Active Directory, guest shares, SMB1 and recursive permission rewrites are intentionally outside this first version.
 

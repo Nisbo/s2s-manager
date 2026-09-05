@@ -88,8 +88,12 @@ Ich habe das Projekt iterativ zusammen mit OpenAIs ChatGPT und Codex entworfen u
 - `[homes]`, `[printers]`, `[print$]` und `IPC$` als Systemfunktionen behandeln
 - Eindeutig gefundene externe Shares mit ihren wirksamen `testparm`-Werten übernehmen
 - Gemeinsame Gruppenbereiche in `/etc/samba/s2s-manager-shares.conf`
-- Normale Linux-/Samba-Benutzer und Samba-only-Konten mit `nologin`
-- Geführte SMB-Firewallregel mit vorbelegtem TCP-Port 445 und auswählbaren S2S-/WireGuard-Quellnetzen; öffentlicher Zugriff über `any` wird nicht angeboten
+- Exakte Vorschau der aktuellen und neuen Konfiguration vor der Umwandlung eines Manager-Shares in das Standardprofil
+- Geführte Auswahl der in Shares verwendeten Gruppen einschließlich Mitgliederzahl
+- Normale Linux-/Samba-Benutzer und Samba-only-Konten mit `nologin`; sichere Namen mit Groß- und Kleinbuchstaben werden unterstützt
+- Benutzerübersicht unterscheidet vorhandene, fehlende und absichtlich nicht angelegte Home-Verzeichnisse
+- Schreibgeschützte Live-Sitzungen/offene Dateien über `smbstatus` sowie eine Share-/Gruppen-/Kontenmatrix
+- Geführte SMB-Firewallregel mit vorbelegtem TCP-Port 445 und auswählbaren entfernten S2S-Netzen, einzelnen Debian-S2S-Peers und WireGuard-Quellen; öffentlicher Zugriff über `any` wird nicht angeboten
 - Backups unter `/root/s2s-manager/samba/backups/`, Prüfung vor Reload und automatischer Rollback
 
 ## Sicherheitsmodell
@@ -166,8 +170,9 @@ Das Hauptmenü ist sofort verfügbar. Wer nur Cron, IPTABLES, UFW, WireGuard, Sa
 
 1. **[26] Samba / File Shares** öffnen und effektive Freigaben prüfen.
 2. `[homes]`, Druckerfreigaben und `IPC$` als Systemobjekte belassen; nur eindeutig gefundene externe statische Shares übernehmen.
-3. Gemeinsamen Gruppenbereich erstellen/bearbeiten und Linux-/Samba-Benutzer seiner Gruppe zuordnen.
-4. Pfad/Berechtigungen und Diagnose prüfen; TCP 445 nur für vertrauenswürdige LAN-/VPN-Quellen freigeben.
+3. Gemeinsamen Gruppenbereich erstellen/bearbeiten, die genaue aktuelle/neue Konfiguration prüfen und Linux-/Samba-Benutzer über die geführte Gruppenauswahl zuordnen.
+4. Mit Zugriffsmatrix und `smbstatus` wirksame Mitgliedschaften und aktive Clients prüfen.
+5. Pfad/Berechtigungen und Diagnose prüfen; TCP 445 nur für vertrauenswürdige LAN-/VPN-/S2S-Quellen freigeben.
 
 Das Entfernen einer Manager-Freigabe behält Verzeichnis und Dateien. Persönliche Home-Share-Regeln, Drucker, Active Directory, Gastfreigaben, SMB1 und rekursive Rechteänderungen gehören bewusst noch nicht zu dieser Version.
 
