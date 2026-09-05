@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 2.2.4
+# Version 2.2.5
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="2.2.4"
+VERSION="2.2.5"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -13087,7 +13087,10 @@ samba_add_user() {
     [[ "${mode}" =~ ^[Bb]$ ]] && return; [[ "${mode}" =~ ^[Ee]$ ]] && { clear_screen; exit 0; }
     [[ "${mode}" =~ ^[123]$ ]] || { error "Invalid selection."; pause; return; }
     if [[ "${mode}" == "2" ]]; then
-        echo "Normal Debian account names use lower-case letters, numbers, underscores and hyphens."
+        echo "Normal Linux/Samba accounts may use safe upper- or lower-case names."
+        echo "For a name outside Debian adduser's lower-case default policy, the manager"
+        echo "uses --allow-bad-names after applying its own strict safety validation."
+        echo "The Linux login and Samba account keep exactly the same spelling."
     elif [[ "${mode}" == "3" ]]; then
         echo "Samba-only account names may also contain upper-case letters, dots and hyphens."
         echo "Linux and Samba store the entered spelling; use the same name on the client."
@@ -13096,17 +13099,29 @@ samba_add_user() {
     valid_samba_account_name "${user}" || { error "The user name contains unsupported characters or starts with an unsafe character."; pause; return; }
     pdbedit -L 2>/dev/null | cut -d: -f1 | grep -Fxq "${user}" && { error "This Samba user already exists."; pause; return; }
     if [[ "${mode}" == "1" ]]; then id "${user}" >/dev/null 2>&1 || { error "The Linux user does not exist."; pause; return; }
-    elif [[ "${mode}" == "2" ]] && ! valid_normal_linux_account_name "${user}"; then error "New normal Debian users require a lower-case standard user name."; pause; return
     elif id "${user}" >/dev/null 2>&1; then error "The Linux user already exists; choose option 1."; pause; return
     fi
     read -r -p "Share group to join [smbshare]: " group; group="${group:-smbshare}"
     getent group "${group}" >/dev/null || { error "The Linux group does not exist."; pause; return; }
     banner; section "SAMBA USER PREVIEW"
     printf '%-24s %s\n' "User:" "${user}"; printf '%-24s %s\n' "Account type:" "$([[ "${mode}" == 1 ]] && echo existing || { [[ "${mode}" == 2 ]] && echo normal || echo 'Samba only'; })"
+    if [[ "${mode}" == "2" ]] && ! valid_normal_linux_account_name "${user}"; then
+        printf '%-24s %s\n' "Debian name policy:" "safe override required (--allow-bad-names)"
+        warn "The Linux login and Samba user will both be stored exactly as '${user}'."
+    fi
     printf '%-24s %s\n' "Share group:" "${group}"; echo
     warn "The Samba password is entered interactively and is not printed by the manager."
     confirm_yes_no "Create/enable this Samba account?" "N" || return
-    case "${mode}" in 2) adduser "${user}" || { error "Linux user creation failed."; pause; return; } ;; 3) useradd -M -s /usr/sbin/nologin "${user}" || { error "Linux account creation failed."; pause; return; } ;; esac
+    case "${mode}" in
+        2)
+            if valid_normal_linux_account_name "${user}"; then
+                adduser "${user}" || { error "Linux user creation failed."; pause; return; }
+            else
+                adduser --allow-bad-names "${user}" || { error "Linux user creation failed."; pause; return; }
+            fi
+            ;;
+        3) useradd -M -s /usr/sbin/nologin "${user}" || { error "Linux account creation failed."; pause; return; } ;;
+    esac
     usermod -aG "${group}" "${user}" || { error "Could not add the user to ${group}."; pause; return; }
     if smbpasswd -a "${user}"; then ok "Samba user enabled."; else error "Samba password setup failed."; fi
     pause
