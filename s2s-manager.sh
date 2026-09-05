@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 2.2.6
+# Version 2.2.7
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="2.2.6"
+VERSION="2.2.7"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -13172,7 +13172,7 @@ samba_user_actions() {
     local user choice group flags status i
     while IFS=: read -r user _; do
         [[ -n "${user}" ]] && users+=("${user}")
-    done < <(pdbedit -L 2>/dev/null)
+    done < <(pdbedit -L 2>/dev/null | sort -f)
     if (( ${#users[@]} == 0 )); then
         info "No Samba users exist yet. Use [8] Add Samba user first."
         pause
@@ -13183,7 +13183,12 @@ samba_user_actions() {
     for i in "${!users[@]}"; do
         flags="$(pdbedit -Lv -u "${users[$i]}" 2>/dev/null | awk -F: '/Account Flags/ {gsub(/[[:space:]]/,"",$2); print $2; exit}')"
         [[ "${flags}" == *D* ]] && status="DISABLED" || status="ENABLED"
-        printf '  [%d] %-24s %s\n' "$((i + 1))" "${users[$i]}" "${status}"
+        printf '  [%d] %-24s ' "$((i + 1))" "${users[$i]}"
+        if [[ "${status}" == "ENABLED" ]]; then
+            printf '%b%s%b\n' "${C_GREEN}${C_BOLD}" "${status}" "${C_RESET}"
+        else
+            printf '%b%s%b\n' "${C_RED}${C_BOLD}" "${status}" "${C_RESET}"
+        fi
     done
     echo
     echo "B = Back    E = Exit"
@@ -13369,7 +13374,11 @@ EOF
         pause
         return
     fi
-    ufw_active && printf '%-24s %s\n' "UFW status:" "active" || printf '%-24s %s\n' "UFW status:" "inactive"
+    if ufw_active; then
+        printf '%-24s %b%s%b\n' "UFW status:" "${C_GREEN}${C_BOLD}" "active" "${C_RESET}"
+    else
+        printf '%-24s %b%s%b\n' "UFW status:" "${C_YELLOW}${C_BOLD}" "inactive" "${C_RESET}"
+    fi
 
     samba_collect_firewall_candidates
     echo
@@ -13381,7 +13390,13 @@ EOF
             else
                 status="not yet allowed"
             fi
-            printf '  [%d] %-20s %s [%s]\n' "$((i + 1))" "${SAMBA_FIREWALL_SOURCES[$i]}" "${SAMBA_FIREWALL_LABELS[$i]}" "${status}"
+            printf '  [%d] %-20s %s [' "$((i + 1))" "${SAMBA_FIREWALL_SOURCES[$i]}" "${SAMBA_FIREWALL_LABELS[$i]}"
+            if [[ "${status}" == "already allowed" ]]; then
+                printf '%b%s%b' "${C_GREEN}${C_BOLD}" "${status}" "${C_RESET}"
+            else
+                printf '%b%s%b' "${C_YELLOW}${C_BOLD}" "${status}" "${C_RESET}"
+            fi
+            printf ']\n'
         done
     else
         info "No configured S2S remote or WireGuard network was found."
