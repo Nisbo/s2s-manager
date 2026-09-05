@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 2.2.2
+# Version 2.2.3
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="2.2.2"
+VERSION="2.2.3"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -13101,9 +13101,38 @@ samba_add_user() {
 samba_user_actions() {
     banner; section "SAMBA USER ACTIONS"
     samba_installed || { error "Samba is not installed."; pause; return; }
-    local user choice group
-    read -r -p "Existing Samba user: " user
-    pdbedit -L 2>/dev/null | cut -d: -f1 | grep -Fxq "${user}" || { error "Samba user not found."; pause; return; }
+    local -a users=()
+    local user choice group flags status i
+    while IFS=: read -r user _; do
+        [[ -n "${user}" ]] && users+=("${user}")
+    done < <(pdbedit -L 2>/dev/null)
+    if (( ${#users[@]} == 0 )); then
+        info "No Samba users exist yet. Use [8] Add Samba user first."
+        pause
+        return
+    fi
+    echo "Choose the Samba account to manage:"
+    echo
+    for i in "${!users[@]}"; do
+        flags="$(pdbedit -Lv -u "${users[$i]}" 2>/dev/null | awk -F: '/Account Flags/ {gsub(/[[:space:]]/,"",$2); print $2; exit}')"
+        [[ "${flags}" == *D* ]] && status="DISABLED" || status="ENABLED"
+        printf '  [%d] %-24s %s\n' "$((i + 1))" "${users[$i]}" "${status}"
+    done
+    echo
+    echo "B = Back    E = Exit"
+    read -r -p "Samba user number: " choice
+    case "${choice}" in
+        b|B|0|"") return ;;
+        e|E) clear_screen; echo "Bye."; exit 0 ;;
+    esac
+    if ! [[ "${choice}" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#users[@]} )); then
+        error "Invalid Samba user selection."
+        pause
+        return
+    fi
+    user="${users[$((choice - 1))]}"
+    echo
+    printf '%-24s %s\n' "Selected Samba user:" "${user}"
     echo; echo "  [1] Change Samba password"; echo "  [2] Enable Samba account"; echo "  [3] Disable Samba account"
     echo "  [4] Add user to an existing share group"; echo "  [5] Remove user from an existing share group"
     echo "  [6] Delete Samba account only (keep Linux user and files)"; echo "  [B] Back"; read -r -p "Action: " choice
