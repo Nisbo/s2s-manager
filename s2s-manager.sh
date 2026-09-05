@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IPsec S2S Manager
-# Version 2.2.3
+# Version 2.2.4
 #
 # Purpose:
 #   Interactive setup and management of route-based IKEv2/IPsec Site-to-Site
@@ -41,7 +41,7 @@
 set -u
 set -o pipefail
 
-VERSION="2.2.3"
+VERSION="2.2.4"
 
 STATE_DIR="/root/s2s-manager"
 TUNNEL_DIR="${STATE_DIR}/tunnels"
@@ -12759,6 +12759,14 @@ valid_samba_group_name() {
     [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
 }
 
+valid_samba_account_name() {
+    [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$ ]]
+}
+
+valid_normal_linux_account_name() {
+    [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
 valid_new_samba_path() {
     local value="$1"
     [[ "${value}" == /srv/* && "${value}" != *$'\n'* && "${value}" != *$'\r'* ]] || return 1
@@ -13078,11 +13086,17 @@ samba_add_user() {
     echo "  [B] Back    [E] Exit"; echo; read -r -p "Account type: " mode
     [[ "${mode}" =~ ^[Bb]$ ]] && return; [[ "${mode}" =~ ^[Ee]$ ]] && { clear_screen; exit 0; }
     [[ "${mode}" =~ ^[123]$ ]] || { error "Invalid selection."; pause; return; }
+    if [[ "${mode}" == "2" ]]; then
+        echo "Normal Debian account names use lower-case letters, numbers, underscores and hyphens."
+    elif [[ "${mode}" == "3" ]]; then
+        echo "Samba-only account names may also contain upper-case letters, dots and hyphens."
+        echo "Linux and Samba store the entered spelling; use the same name on the client."
+    fi
     read -r -p "User name: " user
-    [[ "${user}" =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || { error "The user name contains unsupported characters."; pause; return; }
+    valid_samba_account_name "${user}" || { error "The user name contains unsupported characters or starts with an unsafe character."; pause; return; }
     pdbedit -L 2>/dev/null | cut -d: -f1 | grep -Fxq "${user}" && { error "This Samba user already exists."; pause; return; }
     if [[ "${mode}" == "1" ]]; then id "${user}" >/dev/null 2>&1 || { error "The Linux user does not exist."; pause; return; }
-    elif ! [[ "${user}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then error "New Debian users require a lower-case standard user name."; pause; return
+    elif [[ "${mode}" == "2" ]] && ! valid_normal_linux_account_name "${user}"; then error "New normal Debian users require a lower-case standard user name."; pause; return
     elif id "${user}" >/dev/null 2>&1; then error "The Linux user already exists; choose option 1."; pause; return
     fi
     read -r -p "Share group to join [smbshare]: " group; group="${group:-smbshare}"
